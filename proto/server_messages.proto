@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+package torrent.server;
+
+message ListAvailableFilesResponse {
+    repeated string filenames = 1;
+}
+
+message Peer {
+    uint32 ip = 1;
+    uint32 port = 2;
+}
+
+message DownloadFileResponse {
+    repeated Peer peers = 1;
+}

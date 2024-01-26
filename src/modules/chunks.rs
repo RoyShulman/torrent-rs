@@ -71,6 +71,7 @@ impl FileChunksState {
 ///
 /// Manages the state of available file chunks.
 /// When downloading or seeding a file, an entry is created in the chunks directory for the file.
+#[derive(Debug)]
 pub struct ChunkStates {
     ///
     /// A map of file names to their chunk states.
@@ -108,8 +109,12 @@ impl ChunkStates {
     ///
     /// Upon initialization, loads all chunk states from the chunks directory.
     /// This is used for efficiency, so that we don't have to read the chunk states from disk every time we need them.
-    #[tracing::instrument(skip(self), err(Debug))]
+    #[tracing::instrument(skip(self), err(Debug), fields(directory = %self.chunks_dir.display()))]
     pub async fn load_from_directory(&mut self) -> anyhow::Result<()> {
+        tracing::info!(
+            "loading chunk states from directory: {}",
+            self.chunks_dir.display()
+        );
         let mut dir = tokio::fs::read_dir(&self.chunks_dir)
             .await
             .context("failed to read chunks directory")?;
@@ -152,6 +157,7 @@ impl ChunkStates {
         num_chunks: u64,
         chunk_size: u64,
     ) -> anyhow::Result<()> {
+        tracing::info!("creating new file");
         if self.states.contains_key(filename) {
             anyhow::bail!("chunk state for file {} already exists", filename);
         }
@@ -179,6 +185,7 @@ impl ChunkStates {
         filename: &str,
         chunk_index: u64,
     ) -> anyhow::Result<()> {
+        tracing::debug!("Got new chunk",);
         let entry = self
             .states
             .get_mut(filename)
@@ -194,10 +201,22 @@ impl ChunkStates {
             .await
             .context("failed to write state in update downloaded chunk")
     }
+
+    pub fn does_file_contain_chunk(&self, filename: &str, chunk_index: u64) -> bool {
+        self.states
+            .get(filename)
+            .map(|state| state.downloaded_chunks.contains(&chunk_index))
+            .unwrap_or(false)
+    }
+
+    pub fn does_file_exist(&self, filename: &str) -> bool {
+        self.states.contains_key(filename)
+    }
 }
 
 ///
 /// Serialize the given state to a JSON string and write it to the given path.
+#[tracing::instrument(skip(state), err(Debug))]
 async fn write_state(path: &Path, state: &FileChunksState) -> anyhow::Result<()> {
     let serialized = serde_json::to_string(state).context("failed to serialize state")?;
 
@@ -388,5 +407,41 @@ mod tests {
                 chunk_size: 1024,
             }
         );
+    }
+
+    #[test]
+    fn test_does_file_exist() {
+        let mut states = ChunkStates::new("chunks");
+        states.states.insert(
+            "file1".to_string(),
+            FileChunksState {
+                filename: "file1".to_string(),
+                num_chunks: 5,
+                downloaded_chunks: HashSet::from_iter([1, 2, 3]),
+                chunk_size: 1024,
+            },
+        );
+
+        assert!(states.does_file_exist("file1"));
+        assert!(!states.does_file_exist("file2"));
+    }
+
+    #[test]
+    fn test_does_chunk_exist() {
+        let mut states = ChunkStates::new("chunks");
+        states.states.insert(
+            "file1".to_string(),
+            FileChunksState {
+                filename: "file1".to_string(),
+                num_chunks: 5,
+                downloaded_chunks: HashSet::from_iter([1, 2, 3]),
+                chunk_size: 1024,
+            },
+        );
+
+        assert!(states.does_file_contain_chunk("file1", 1));
+        assert!(!states.does_file_contain_chunk("file1", 4));
+        // Also make sure it returns false for a non-existent file
+        assert!(!states.does_file_contain_chunk("file2", 1));
     }
 }

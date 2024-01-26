@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package torrent.client;
+
+message DownloadFile {
+    string filename = 1;
+}
+
+message ListAvailableFilesRequest {
+
+}
+
+message UpdateNewFile {
+    string filename = 1;
+}
