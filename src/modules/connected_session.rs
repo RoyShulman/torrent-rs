@@ -2,14 +2,15 @@ use anyhow::Context;
 use prost::Message;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpStream,
+    net::{lookup_host, TcpStream, ToSocketAddrs},
 };
+use tracing::instrument;
 
 ///
 /// Trait for a session with a torrent server
 /// Used to abstract the internal sending and receiving of buffers.
-pub trait ServerSocketWrapper {
-    async fn connect(addr: &str) -> anyhow::Result<Self>
+pub trait SocketWrapper {
+    async fn connect<A: ToSocketAddrs>(addr: A) -> anyhow::Result<Self>
     where
         Self: Sized;
     async fn send(&mut self, buffer: &[u8]) -> anyhow::Result<()>;
@@ -17,11 +18,11 @@ pub trait ServerSocketWrapper {
 }
 
 #[derive(Debug)]
-pub struct TokioServerSocketWrapper {
+pub struct TokioSocketWrapper {
     session: TcpStream,
 }
 
-impl ServerSocketWrapper for TokioServerSocketWrapper {
+impl SocketWrapper for TokioSocketWrapper {
     async fn send(&mut self, buffer: &[u8]) -> anyhow::Result<()> {
         self.session
             .write_all(buffer)
@@ -36,26 +37,32 @@ impl ServerSocketWrapper for TokioServerSocketWrapper {
             .context("failed to read from socket")
     }
 
-    async fn connect(addr: &str) -> anyhow::Result<Self> {
+    async fn connect<A: ToSocketAddrs>(addr: A) -> anyhow::Result<Self> {
         let session = TcpStream::connect(addr)
             .await
-            .context("failed to connect to server")?;
+            .context("failed to connect to ")?;
         Ok(Self { session })
     }
 }
 
 ///
-/// A session between a client and a torrent server
+/// A session between a client and a torrent server or a peer
 ///
 /// All sent messages are encoded using protobuf with 4 bytes of message size prepended in little endian
 #[derive(Debug)]
-pub struct ClientServerSession<S> {
+pub struct ConnectedSession<S> {
     socket_wrapper: S,
 }
 
-impl<S: ServerSocketWrapper> ClientServerSession<S> {
-    pub async fn connect(addr: &str) -> anyhow::Result<Self> {
-        let socket_wrapper = S::connect(addr).await?;
+impl<S: SocketWrapper> ConnectedSession<S> {
+    #[instrument(skip(addr))]
+    pub async fn connect<A: ToSocketAddrs>(addr: A) -> anyhow::Result<Self> {
+        let host = lookup_host(addr)
+            .await
+            .context("failed to lookup host")?
+            .next()
+            .context("no hosts found")?;
+        let socket_wrapper = S::connect(host).await?;
         Ok(Self { socket_wrapper })
     }
 
@@ -101,17 +108,17 @@ mod tests {
         include!(concat!(env!("OUT_DIR"), "/torrent.client.rs"));
     }
 
-    struct MockServerSocketWrapper {
+    struct MockSocketWrapper {
         buffer: Vec<u8>,
     }
 
-    impl MockServerSocketWrapper {
+    impl MockSocketWrapper {
         fn new() -> Self {
             Self { buffer: Vec::new() }
         }
     }
 
-    impl ServerSocketWrapper for MockServerSocketWrapper {
+    impl SocketWrapper for MockSocketWrapper {
         async fn send(&mut self, buffer: &[u8]) -> anyhow::Result<()> {
             self.buffer.extend_from_slice(buffer);
             Ok(())
@@ -124,14 +131,14 @@ mod tests {
             Ok(bytes_to_read)
         }
 
-        async fn connect(_addr: &str) -> anyhow::Result<Self> {
+        async fn connect<A: ToSocketAddrs>(_addr: A) -> anyhow::Result<Self> {
             Ok(Self { buffer: Vec::new() })
         }
     }
 
-    fn get_mock_session() -> ClientServerSession<MockServerSocketWrapper> {
-        ClientServerSession {
-            socket_wrapper: MockServerSocketWrapper::new(),
+    fn get_mock_session() -> ConnectedSession<MockSocketWrapper> {
+        ConnectedSession {
+            socket_wrapper: MockSocketWrapper::new(),
         }
     }
 

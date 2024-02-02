@@ -13,4 +13,7 @@ message Peer {
 
 message DownloadFileResponse {
     repeated Peer peers = 1;
+    uint64 file_size = 2;
+    uint64 num_chunks = 3;
+    uint64 chunk_size = 4;
 }

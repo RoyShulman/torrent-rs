@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use tokio::{
@@ -14,6 +14,10 @@ pub struct SingleFileManager {
 impl SingleFileManager {
     pub fn new<T: Into<PathBuf>>(path: T) -> Self {
         Self { path: path.into() }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 
     #[tracing::instrument(skip(self))]
