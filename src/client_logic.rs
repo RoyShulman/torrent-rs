@@ -90,12 +90,39 @@ impl TorrentClient {
 
         Ok(response.files)
     }
+
+    #[instrument(skip(self))]
+    pub async fn send_available_files_metadata_to_server(
+        &mut self,
+        filename: &str,
+        num_chunks: u64,
+        chunk_size: u64,
+    ) -> anyhow::Result<()> {
+        let update_file_request = client_proto::UpdateNewAvailableFileOnClient {
+            filename: filename.to_string(),
+            num_chunks,
+            chunk_size,
+        };
+        let request = client_proto::RequestToServer {
+            request: Some(
+                client_proto::request_to_server::Request::UpdateNewAvailableFileOnClient(
+                    update_file_request,
+                ),
+            ),
+        };
+        self.server_session
+            .lock()
+            .await
+            .send_msg(&request)
+            .await
+            .context("failed to send available files metadata request")?;
+
+        Ok(())
+    }
 }
 
 ///
 /// Main loop of the client
-///
-///
 #[instrument(skip(client))]
 pub async fn client_main_loop(mut client: TorrentClient) -> anyhow::Result<()> {
     tracing::info!("Starting client main loop");
@@ -103,6 +130,11 @@ pub async fn client_main_loop(mut client: TorrentClient) -> anyhow::Result<()> {
     loop {
         let files = client.list_files_from_server().await?;
         tracing::info!("Available files: {:?}", files);
+
+        client
+            .send_available_files_metadata_to_server("test", 10, 10)
+            .await
+            .context("failed to send available files metadata")?;
 
         tokio::time::sleep(time::Duration::from_secs(5)).await;
     }

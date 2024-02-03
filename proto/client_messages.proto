@@ -10,13 +10,16 @@ message ListAvailableFilesRequest {
 
 }
 
-message UpdateNewFile {
+message UpdateNewAvailableFileOnClient {
     string filename = 1;
+    uint64 num_chunks = 2;
+    uint64 chunk_size = 3;
 }
 
 message RequestToServer {
     oneof request {
         DownloadFile download_file = 1;
         ListAvailableFilesRequest list_available_files = 2;
+        UpdateNewAvailableFileOnClient update_new_available_file_on_client = 3;
     }
 }

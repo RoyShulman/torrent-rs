@@ -37,7 +37,47 @@ pub async fn handle_client_request(
                 .await
                 .context("failed to list available files")
         }
+        client_proto::request_to_server::Request::UpdateNewAvailableFileOnClient(request) => {
+            handle_new_file_on_client(request, files_directory, &connected_client.peer_addr)
+                .await
+                .context("failed to handle new file on client")
+        }
     }
+}
+
+///
+/// Update the server with the new file that is available on the client.
+/// This will check if metadata for the file already exists, and if it does will only add the peer address to the list of peers.
+#[instrument(err(Debug))]
+async fn handle_new_file_on_client(
+    request: client_proto::UpdateNewAvailableFileOnClient,
+    files_directory: &Path,
+    peer_addr: &std::net::SocketAddr,
+) -> anyhow::Result<()> {
+    // TODO: there is a race here, if two clients add the same file at the same time, the file will be overwritten and we will lose the peers from one of the clients
+    tracing::info!("Handling new file on client request: {:?}", request);
+
+    let metadata_file = files_directory.join(format!("{}.json", request.filename));
+    let mut file_data = if metadata_file.exists() {
+        let file_data = read_to_string(&metadata_file)
+            .await
+            .context("failed to read file data")?;
+
+        serde_json::from_str(&file_data).context("failed to deserialize file")?
+    } else {
+        AvilableFile {
+            filename: request.filename,
+            num_chunks: request.num_chunks,
+            chunk_size: request.chunk_size,
+            peers: HashSet::new(),
+        }
+    };
+
+    file_data.peers.insert(peer_addr.ip().to_string());
+    let serialized = serde_json::to_string(&file_data).context("failed to serialize file")?;
+    tokio::fs::write(metadata_file, serialized)
+        .await
+        .context("failed to write file data")
 }
 
 ///
@@ -61,7 +101,6 @@ async fn get_available_files_response(
     let mut files = Vec::new();
     while let Some(entry) = entries.next_entry().await.context("failed to read entry")? {
         let path = entry.path();
-        tracing::info!("Reading file: {:?}", path.extension());
 
         // skip non-json files
         if path.extension().map(|ext| ext != "json").unwrap_or(true) {
@@ -76,7 +115,6 @@ async fn get_available_files_response(
             serde_json::from_str(&file_data).context("failed to deserialize file")?;
         files.push(file);
     }
-    tracing::info!("Files: {:?}", files);
 
     let files = files
         .into_iter()
@@ -152,5 +190,69 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.files.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_handle_new_file_on_client_new_file() {
+        let directory = tempdir().unwrap();
+        let request = client_proto::UpdateNewAvailableFileOnClient {
+            filename: "file1".to_string(),
+            num_chunks: 5,
+            chunk_size: 10,
+        };
+
+        let peer_addr = "127.0.0.1:1".parse().unwrap();
+        handle_new_file_on_client(request, directory.path(), &peer_addr)
+            .await
+            .unwrap();
+
+        let file_data = read_to_string(directory.path().join("file1.json"))
+            .await
+            .unwrap();
+        let file: AvilableFile = serde_json::from_str(&file_data).unwrap();
+        assert_eq!(file.filename, "file1");
+        assert_eq!(file.num_chunks, 5);
+        assert_eq!(file.chunk_size, 10);
+        assert_eq!(file.peers, HashSet::from_iter(["127.0.0.1".to_string()]));
+    }
+
+    #[tokio::test]
+    async fn test_handle_new_file_on_client_existing_file() {
+        let directory = tempdir().unwrap();
+        let file = AvilableFile {
+            filename: "file1".to_string(),
+            num_chunks: 5,
+            chunk_size: 10,
+            peers: HashSet::from_iter(["1.2.3.4".to_string()]),
+        };
+
+        serde_json::to_writer(
+            std::fs::File::create(directory.path().join("file1.json")).unwrap(),
+            &file,
+        )
+        .unwrap();
+
+        let request = client_proto::UpdateNewAvailableFileOnClient {
+            filename: "file1".to_string(),
+            num_chunks: 5,
+            chunk_size: 10,
+        };
+        let peer_addr = "127.0.0.1:1".parse().unwrap();
+        handle_new_file_on_client(request, directory.path(), &peer_addr)
+            .await
+            .unwrap();
+
+        let file_data = read_to_string(directory.path().join("file1.json"))
+            .await
+            .unwrap();
+
+        let file: AvilableFile = serde_json::from_str(&file_data).unwrap();
+        assert_eq!(file.filename, "file1");
+        assert_eq!(file.num_chunks, 5);
+        assert_eq!(file.chunk_size, 10);
+        assert_eq!(
+            file.peers,
+            HashSet::from_iter(["1.2.3.4".to_string(), "127.0.0.1".to_string()])
+        );
     }
 }

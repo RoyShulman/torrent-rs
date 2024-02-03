@@ -52,6 +52,6 @@ Cargo.lock
 
 # End of https://www.toptal.com/developers/gitignore/api/rust,macos
 
-./files
-./states
-./available_files
+files
+states
+available_files

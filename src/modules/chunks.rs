@@ -39,13 +39,13 @@ pub struct SingleFileChunksState {
     pub filename: String,
     ///
     /// The total number of chunks the file is split into.
-    num_chunks: u64,
+    pub num_chunks: u64,
     ///
     /// A hashset of chunk numbers that are still missing and need to be downloaded.
-    missing_chunks: HashSet<u64>,
+    pub missing_chunks: HashSet<u64>,
     ///
     /// The size of each chunk.
-    chunk_size: u64,
+    pub chunk_size: u64,
     ///
     /// The directory where this file is stored.
     chunk_states_directory: PathBuf,
