@@ -3,7 +3,14 @@ syntax = "proto3";
 package torrent.server;
 
 message ListAvailableFilesResponse {
-    repeated string filenames = 1;
+    message SingleFile {
+        string filename = 1;
+        uint64 chunk_size = 2;
+        uint64 num_chunks = 3;
+        repeated string peers = 4;
+    }
+
+    repeated SingleFile files = 1;
 }
 
 message Peer {

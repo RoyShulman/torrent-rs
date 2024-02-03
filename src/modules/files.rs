@@ -7,11 +7,11 @@ use tokio::{
 };
 
 #[derive(Debug)]
-pub struct SingleFileManager {
+pub struct SingleChunkedFile {
     path: PathBuf,
 }
 
-impl SingleFileManager {
+impl SingleChunkedFile {
     pub fn new<T: Into<PathBuf>>(path: T) -> Self {
         Self { path: path.into() }
     }
@@ -94,7 +94,7 @@ mod tests {
         let directory = tempdir().unwrap();
         let filename = "file1";
         let file_path = directory.path().join(filename);
-        let files_manager = SingleFileManager::new(file_path);
+        let files_manager = SingleChunkedFile::new(file_path);
 
         files_manager.create(5).await.unwrap();
 
@@ -115,7 +115,7 @@ mod tests {
         let directory = tempdir().unwrap();
         let filename = "file1";
         let file_path = directory.path().join(filename);
-        let files_manager = SingleFileManager::new(file_path);
+        let files_manager = SingleChunkedFile::new(file_path);
 
         let buffer = vec![1, 2, 3, 4, 5];
         let offset = 0;
@@ -130,7 +130,7 @@ mod tests {
         let directory = tempdir().unwrap();
         let filename = "file1";
         let file_path = directory.path().join(filename);
-        let files_manager = SingleFileManager::new(file_path);
+        let files_manager = SingleChunkedFile::new(file_path);
 
         files_manager.create(10).await.unwrap();
 

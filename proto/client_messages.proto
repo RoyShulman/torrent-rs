@@ -13,3 +13,10 @@ message ListAvailableFilesRequest {
 message UpdateNewFile {
     string filename = 1;
 }
+
+message RequestToServer {
+    oneof request {
+        DownloadFile download_file = 1;
+        ListAvailableFilesRequest list_available_files = 2;
+    }
+}

@@ -1,50 +1,43 @@
-pub mod client_logic;
-mod modules;
-use std::path::PathBuf;
-
 use anyhow::Context;
 use clap::Parser;
-use client_logic::TorrentClient;
-use modules::server_session::{ClientServerSession, TokioServerSocketWrapper};
-use tracing::instrument;
-
-use crate::{
-    client_logic::client_main_loop,
-    modules::{chunks::ChunkStates, files::SingleFileManager},
+use std::path::PathBuf;
+use torrent_rs::{
+    client_logic::{client_main_loop, TorrentClient},
+    modules::{chunks::load_from_directory, connected_session::ConnectedSession},
 };
+use tracing::instrument;
 
 /// Simple torrent client
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
     /// Directory to store files
-    #[arg(short, long)]
+    #[arg(long)]
     files_directory: PathBuf,
 
     /// Directory to store states for downloads
-    #[arg(short, long)]
+    #[arg(long)]
     states_directory: PathBuf,
 
     /// Address of the server to connect to
-    #[arg(short, long)]
+    #[arg(long)]
     server_address: String,
 }
 
 #[instrument]
 async fn setup_client(args: &Args) -> anyhow::Result<TorrentClient> {
-    let mut chunk_states = ChunkStates::new(&args.states_directory);
-
-    let (server_session, load_result) = tokio::join!(
-        ClientServerSession::connect(&args.server_address),
-        chunk_states.load_from_directory()
+    let (server_session, existing_chunk_states) = tokio::join!(
+        ConnectedSession::connect(&args.server_address),
+        load_from_directory(&args.states_directory)
     );
 
-    load_result.context("Failed to load chunk states")?;
+    let existing_chunk_states = existing_chunk_states.context("Failed to load chunk states")?;
     let server_session = server_session.context("Failed to connect to server")?;
 
     Ok(TorrentClient::new(
         &args.files_directory,
-        chunk_states,
+        &args.states_directory,
+        existing_chunk_states,
         server_session,
     ))
 }

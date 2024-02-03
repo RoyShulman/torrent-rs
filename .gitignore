@@ -54,3 +54,4 @@ Cargo.lock
 
 ./files
 ./states
+./available_files

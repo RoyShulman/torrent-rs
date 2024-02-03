@@ -6,20 +6,29 @@ use tokio::{
 };
 use tracing::instrument;
 
+#[allow(async_fn_in_trait)]
+
 ///
-/// Trait for a session with a torrent server
+/// Trait for a session with a torrent server.
+///
 /// Used to abstract the internal sending and receiving of buffers.
 pub trait SocketWrapper {
     async fn connect<A: ToSocketAddrs>(addr: A) -> anyhow::Result<Self>
     where
         Self: Sized;
     async fn send(&mut self, buffer: &[u8]) -> anyhow::Result<()>;
-    async fn recv(&mut self, buffer: &mut [u8]) -> anyhow::Result<usize>;
+    async fn recv(&mut self, buffer: &mut [u8]) -> anyhow::Result<Option<usize>>;
 }
 
 #[derive(Debug)]
 pub struct TokioSocketWrapper {
     session: TcpStream,
+}
+
+impl TokioSocketWrapper {
+    pub fn new(session: TcpStream) -> Self {
+        Self { session }
+    }
 }
 
 impl SocketWrapper for TokioSocketWrapper {
@@ -30,11 +39,18 @@ impl SocketWrapper for TokioSocketWrapper {
             .context("failed to write to socket")
     }
 
-    async fn recv(&mut self, buffer: &mut [u8]) -> anyhow::Result<usize> {
-        self.session
-            .read_exact(buffer)
-            .await
-            .context("failed to read from socket")
+    async fn recv(&mut self, buffer: &mut [u8]) -> anyhow::Result<Option<usize>> {
+        let result = match self.session.read_exact(buffer).await {
+            Ok(result) => result,
+            Err(err) => {
+                if err.kind() == std::io::ErrorKind::UnexpectedEof {
+                    return Ok(None);
+                }
+                return Err(err).context("failed to read from socket");
+            }
+        };
+
+        Ok(Some(result))
     }
 
     async fn connect<A: ToSocketAddrs>(addr: A) -> anyhow::Result<Self> {
@@ -52,6 +68,12 @@ impl SocketWrapper for TokioSocketWrapper {
 #[derive(Debug)]
 pub struct ConnectedSession<S> {
     socket_wrapper: S,
+}
+
+impl<S> ConnectedSession<S> {
+    pub fn with_socket(socket_wrapper: S) -> Self {
+        Self { socket_wrapper }
+    }
 }
 
 impl<S: SocketWrapper> ConnectedSession<S> {
@@ -82,12 +104,17 @@ impl<S: SocketWrapper> ConnectedSession<S> {
             .context("failed to send message")
     }
 
-    pub async fn recv_msg<T: Message + Default>(&mut self) -> anyhow::Result<T> {
+    pub async fn recv_msg<T: Message + Default>(&mut self) -> anyhow::Result<Option<T>> {
         let mut message_size = [0u8; 4];
-        self.socket_wrapper
+        let result = self
+            .socket_wrapper
             .recv(&mut message_size)
             .await
             .context("failed to read message size")?;
+        if result.is_none() {
+            // Socket was closed
+            return Ok(None);
+        }
 
         let message_size = u32::from_le_bytes(message_size) as usize;
         let mut buffer = vec![0u8; message_size];
@@ -97,7 +124,8 @@ impl<S: SocketWrapper> ConnectedSession<S> {
             .await
             .context("failed to read message")?;
 
-        Message::decode(buffer.as_slice()).context("failed to decode message")
+        let message = T::decode(buffer.as_slice()).context("failed to decode message")?;
+        Ok(Some(message))
     }
 }
 
@@ -124,11 +152,11 @@ mod tests {
             Ok(())
         }
 
-        async fn recv(&mut self, buffer: &mut [u8]) -> anyhow::Result<usize> {
+        async fn recv(&mut self, buffer: &mut [u8]) -> anyhow::Result<Option<usize>> {
             let bytes_to_read = std::cmp::min(buffer.len(), self.buffer.len());
             buffer[..bytes_to_read].copy_from_slice(&self.buffer[..bytes_to_read]);
             self.buffer.drain(..bytes_to_read);
-            Ok(bytes_to_read)
+            Ok(Some(bytes_to_read))
         }
 
         async fn connect<A: ToSocketAddrs>(_addr: A) -> anyhow::Result<Self> {
@@ -152,7 +180,7 @@ mod tests {
 
         session.send_msg(&msg).await.unwrap();
 
-        let received_msg: client_proto::DownloadFile = session.recv_msg().await.unwrap();
+        let received_msg: client_proto::DownloadFile = session.recv_msg().await.unwrap().unwrap();
         assert_eq!(received_msg.filename, "test");
     }
 
