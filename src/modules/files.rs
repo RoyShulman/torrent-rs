@@ -21,12 +21,7 @@ impl SingleChunkedFile {
     }
 
     #[tracing::instrument(skip(self))]
-    pub async fn read_chunk(
-        &self,
-        filename: &str,
-        offset: u64,
-        chunk_size: usize,
-    ) -> anyhow::Result<Vec<u8>> {
+    pub async fn read_chunk(&self, offset: u64, chunk_size: usize) -> anyhow::Result<Vec<u8>> {
         let mut file = File::open(&self.path)
             .await
             .context("failed to open file")?;

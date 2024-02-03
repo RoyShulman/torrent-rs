@@ -15,12 +15,10 @@ message ListAvailableFilesResponse {
 
 message Peer {
     uint32 ip = 1;
-    uint32 port = 2;
 }
 
 message DownloadFileResponse {
     repeated Peer peers = 1;
-    uint64 file_size = 2;
     uint64 num_chunks = 3;
     uint64 chunk_size = 4;
 }

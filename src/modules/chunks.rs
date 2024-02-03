@@ -52,6 +52,16 @@ pub struct SingleFileChunksState {
 }
 
 impl SingleFileChunksState {
+    #[tracing::instrument(err(Debug))]
+    pub async fn from_filename(directory: &Path, filename: &str) -> anyhow::Result<Self> {
+        let state_file = directory.join(format!("{filename}.json"));
+        let content = read_to_string(&state_file)
+            .await
+            .context("failed to read state file")?;
+
+        serde_json::from_str(&content).context("failed to deserialize state")
+    }
+
     ///
     /// Creates a new state for a file that has not been downloaded yet.
     /// All chunks are considered missing.
@@ -89,9 +99,15 @@ impl SingleFileChunksState {
     }
 
     ///
-    /// Returns all the missing chunk indexes for this file.
-    fn get_missing_chunks(&self) -> impl Iterator<Item = &u64> {
-        self.missing_chunks.iter()
+    /// Returns all the available chunk indexes for this file.
+    /// This method is more costly than missing chunks because it has to iterate over all the missing chunks and returns the difference
+    pub fn get_available_chunks(&self) -> Vec<u64> {
+        let all_chunks = HashSet::from_iter(0..self.num_chunks);
+        all_chunks
+            .difference(&self.missing_chunks)
+            .into_iter()
+            .copied()
+            .collect()
     }
 
     ///
@@ -121,6 +137,10 @@ impl SingleFileChunksState {
         self.serialize_to_file()
             .await
             .context("failed to write state in update new chunk")
+    }
+
+    pub fn get_chunk_offset(&self, chunk_index: u64) -> u64 {
+        chunk_index * self.chunk_size
     }
 }
 
@@ -184,7 +204,7 @@ mod tests {
             chunk_states_directory: directory.path().to_path_buf(),
         };
 
-        let missing_chunks = state.get_missing_chunks().copied().sorted().collect_vec();
+        let missing_chunks = state.missing_chunks.into_iter().sorted().collect_vec();
         assert_eq!(missing_chunks, vec![1, 2, 3]);
     }
 
@@ -192,7 +212,7 @@ mod tests {
     fn test_create_new_file_to_download() {
         let directory = tempdir().unwrap();
         let state = SingleFileChunksState::new_file_to_download("file1", directory.path(), 5, 1024);
-        let missing_chunks = state.get_missing_chunks().copied().sorted().collect_vec();
+        let missing_chunks = state.missing_chunks.into_iter().sorted().collect_vec();
         assert_eq!(missing_chunks, vec![0, 1, 2, 3, 4]);
     }
 
@@ -200,7 +220,7 @@ mod tests {
     fn test_create_new_existing_file() {
         let directory = tempdir().unwrap();
         let state = SingleFileChunksState::new_existing_file("file1", directory.path(), 5, 1024);
-        let missing_chunks = state.get_missing_chunks();
+        let missing_chunks = state.missing_chunks.into_iter();
         assert_eq!(missing_chunks.count(), 0);
     }
 

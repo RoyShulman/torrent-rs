@@ -3,6 +3,7 @@ use std::{collections::HashMap, path::PathBuf};
 
 use anyhow::Context;
 use tokio::{
+    net::TcpListener,
     sync::{oneshot, Mutex},
     time::timeout,
 };
@@ -24,6 +25,7 @@ mod server_proto {
 pub struct TorrentClient {
     file_directory: PathBuf,
     states_directory: PathBuf,
+
 
     ///
     /// This needs to be a mutex because when sending messages to the server, we need the response to be in order
@@ -92,7 +94,7 @@ impl TorrentClient {
     }
 
     #[instrument(skip(self))]
-    pub async fn send_available_files_metadata_to_server(
+    pub async fn send_available_file_metadata_to_server(
         &mut self,
         filename: &str,
         num_chunks: u64,
@@ -132,7 +134,7 @@ pub async fn client_main_loop(mut client: TorrentClient) -> anyhow::Result<()> {
         tracing::info!("Available files: {:?}", files);
 
         client
-            .send_available_files_metadata_to_server("test", 10, 10)
+            .send_available_file_metadata_to_server("test", 10, 10)
             .await
             .context("failed to send available files metadata")?;
 

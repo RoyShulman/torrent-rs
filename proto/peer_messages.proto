@@ -1,3 +1,40 @@
 syntax = "proto3";
 
 package torrent.peer;
+
+message ListAvailableChunks {
+    string filename = 1;
+}
+
+message DownloadChunkRequest {
+    string filename = 1;
+    uint64 index = 2;
+}
+
+message PeerRequest {
+    oneof request {
+        ListAvailableChunks list_available_chunks = 1;
+        DownloadChunkRequest download_chunk = 2;
+    }
+}
+
+message ChunkResponse {
+    bytes buffer = 1;
+    uint64 chunk_index = 2;
+}
+
+message AvailableChunksResponse {
+    repeated uint64 chunks = 1;
+}
+
+message ErrorResponse {
+    string message = 1;
+}
+
+message PeerResponse {
+    oneof response {
+        ChunkResponse chunk_response = 1;
+        AvailableChunksResponse available_chunks = 2;
+        ErrorResponse error = 3;
+    }
+}
