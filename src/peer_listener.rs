@@ -1,13 +1,16 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
-use tokio::{net::TcpListener, task::JoinHandle};
+use tokio::{net::TcpListener, sync::oneshot, task::JoinHandle};
 use tracing::instrument;
 
-use crate::modules::{
-    chunks::SingleFileChunksState,
-    connected_session::{ConnectedSession, TokioSocketWrapper},
-    files::SingleChunkedFile,
+use crate::{
+    hash_utils::sha256_hash_chunk,
+    modules::{
+        chunks::SingleFileChunksState,
+        connected_session::{ConnectedSession, TokioSocketWrapper},
+        files::SingleChunkedFile,
+    },
 };
 
 #[derive(Debug)]
@@ -140,9 +143,14 @@ impl ConnectedPeer {
             .await
             .context("failed to read chunk data")?;
 
+        let chunk_hash = sha256_hash_chunk(chunk_data.clone())
+            .await
+            .context("failed to hash chunk")?;
+
         Ok(peer_proto::ChunkResponse {
             buffer: chunk_data,
             chunk_index,
+            sha256_hash: chunk_hash,
         })
     }
 }
@@ -155,6 +163,7 @@ pub async fn setup_peer_listener_task(
     let listener = TcpListener::bind(format!("0.0.0.0:{}", peer_port))
         .await
         .context("Failed to bind to peer listener port")?;
+    tracing::info!("Listening to peer connections on port: {}", peer_port);
 
     let states_directory = states_directory.to_owned();
     let file_directory = files_directory.to_owned();

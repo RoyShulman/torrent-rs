@@ -21,6 +21,7 @@ message PeerRequest {
 message ChunkResponse {
     bytes buffer = 1;
     uint64 chunk_index = 2;
+    bytes sha256_hash = 3;
 }
 
 message AvailableChunksResponse {

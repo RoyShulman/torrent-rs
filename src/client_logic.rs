@@ -26,7 +26,6 @@ pub struct TorrentClient {
     file_directory: PathBuf,
     states_directory: PathBuf,
 
-
     ///
     /// This needs to be a mutex because when sending messages to the server, we need the response to be in order
     /// and we can't have multiple threads sending messages at the same time.
@@ -120,24 +119,5 @@ impl TorrentClient {
             .context("failed to send available files metadata request")?;
 
         Ok(())
-    }
-}
-
-///
-/// Main loop of the client
-#[instrument(skip(client))]
-pub async fn client_main_loop(mut client: TorrentClient) -> anyhow::Result<()> {
-    tracing::info!("Starting client main loop");
-
-    loop {
-        let files = client.list_files_from_server().await?;
-        tracing::info!("Available files: {:?}", files);
-
-        client
-            .send_available_file_metadata_to_server("test", 10, 10)
-            .await
-            .context("failed to send available files metadata")?;
-
-        tokio::time::sleep(time::Duration::from_secs(5)).await;
     }
 }

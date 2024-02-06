@@ -1,13 +1,12 @@
 use anyhow::Context;
+use axum::ServiceExt;
 use clap::Parser;
-use std::path::PathBuf;
-use tokio::{join, net::TcpListener, task::JoinHandle};
+use std::{future::IntoFuture, path::PathBuf};
+use tokio::{join, net::TcpListener, select, task::JoinHandle};
 use torrent_rs::{
-    client_logic::{client_main_loop, TorrentClient},
-    modules::{
-        chunks::load_from_directory,
-        connected_session::{ConnectedSession, TokioSocketWrapper},
-    },
+    client_logic::TorrentClient,
+    client_rest_api::get_client_router,
+    modules::{chunks::load_from_directory, connected_session::ConnectedSession},
     peer_listener::setup_peer_listener_task,
 };
 use tracing::instrument;
@@ -32,14 +31,18 @@ struct Args {
     /// The port to listen on for incoming connections from peers.
     #[arg(long)]
     peer_port: u16,
+
+    ///
+    /// The port for the REST API to listen on.
+    #[arg(long)]
+    rest_api_port: u16,
 }
 
 #[instrument]
 async fn setup_client(args: &Args) -> anyhow::Result<TorrentClient> {
-    let (server_session, existing_chunk_states, listener) = tokio::join!(
+    let (server_session, existing_chunk_states) = tokio::join!(
         ConnectedSession::connect(&args.server_address),
         load_from_directory(&args.states_directory),
-        TcpListener::bind(format!("0.0.0.0:{}", args.peer_port)),
     );
 
     let existing_chunk_states = existing_chunk_states.context("Failed to load chunk states")?;
@@ -85,9 +88,27 @@ async fn main() {
         }
     };
 
-    if let Err(e) = client_main_loop(client).await {
-        tracing::error!("Error in main loop: {:?}", e);
-        return;
+    let listener =
+        match tokio::net::TcpListener::bind(format!("127.0.0.1:{}", args.rest_api_port)).await {
+            Ok(listener) => listener,
+            Err(err) => {
+                tracing::error!("Failed to bind to rest api port: {:?}", err);
+                return;
+            }
+        };
+
+    tracing::info!("API listening on: {}", args.rest_api_port);
+
+    let client_api_router = get_client_router(client);
+    let client_api_server = axum::serve(listener, client_api_router).into_future();
+
+    select! {
+        _ = peer_listener_task => {
+            tracing::error!("Peer listener task failed");
+        }
+        _ = client_api_server => {
+            tracing::error!("Client api server failed");
+        }
     }
 
     tracing::info!("Done. cya later :)");
