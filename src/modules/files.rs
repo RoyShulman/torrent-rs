@@ -16,6 +16,29 @@ impl SingleChunkedFile {
         Self { path: path.into() }
     }
 
+    ///
+    /// Create an existing file with the given data
+    #[tracing::instrument(skip(path, data), fields(path = %path.as_ref().display()), err(Debug))]
+    pub async fn with_existing_data<T: Into<PathBuf> + AsRef<Path>>(
+        path: T,
+        data: Vec<u8>,
+    ) -> anyhow::Result<Self> {
+        let path = path.into();
+        tracing::info!("creating file with existing data");
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .await
+            .context("failed to open file")?;
+
+        file.write_all(&data)
+            .await
+            .context("failed to write data to file")?;
+
+        Ok(Self { path })
+    }
+
     pub fn path(&self) -> &Path {
         &self.path
     }

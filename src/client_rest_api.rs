@@ -2,26 +2,39 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use axum::{
-    extract::State,
+    extract::{DefaultBodyLimit, Multipart, State},
     http::StatusCode,
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
 use axum_macros::debug_handler;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use tokio::sync::RwLock;
+use tracing::instrument;
 
-use crate::client_logic::TorrentClient;
+use crate::{client_logic::TorrentClient, modules::chunks::SingleFileChunksState};
 
 type ClientState = Arc<RwLock<TorrentClient>>;
 
 pub fn get_client_router(client: TorrentClient) -> Router {
     let router = Router::new()
-        .route("/list_files", get(handle_list_files))
+        .route("/list_server_files", get(handle_list_server_files))
+        .route("/list_local_files", get(handle_list_local_files))
+        .route("/upload_new_client_file", post(handle_upload_file))
+        .route("/healthcheck", get(handle_healthcheck))
+        .layer(DefaultBodyLimit::disable())
         .with_state(Arc::new(RwLock::new(client)));
     router
+}
+
+async fn handle_healthcheck() -> Json<serde_json::Value> {
+    json!({
+        "status": "OK",
+    })
+    .into()
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -32,10 +45,26 @@ struct RemoteFile {
     peers: Vec<String>,
 }
 
+async fn handle_list_local_files(
+    State(client): State<ClientState>,
+) -> Result<Json<Vec<SingleFileChunksState>>, ApiError> {
+    tracing::info!("Handling list local files request");
+    let client = client.read().await;
+
+    let local_files = client
+        .list_local_files()
+        .await
+        .context("failed to list local files")?;
+
+    Ok(local_files.into())
+}
+
 #[debug_handler]
-async fn handle_list_files(
+#[instrument(skip(client))]
+async fn handle_list_server_files(
     State(client): State<ClientState>,
 ) -> Result<Json<Vec<RemoteFile>>, ApiError> {
+    tracing::info!("Handling list server files request");
     let mut client = client.write().await;
 
     let remote_files = client
@@ -55,6 +84,35 @@ async fn handle_list_files(
     Ok(remote_files.into())
 }
 
+///
+/// A handler for the upload file from a client. This make the file available to all other clients by
+/// publishing it as available on the server.
+/// Each multipart field is a file to be uploaded.
+#[instrument(skip(client, multipart), err(Debug))]
+async fn handle_upload_file(
+    State(client): State<ClientState>,
+    mut multipart: Multipart,
+) -> Result<(), ApiError> {
+    tracing::info!("Handling upload file request");
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .context("failed to read field")?
+    {
+        let filename = field.name().context("failed to read filename")?.to_string();
+        let file_data = field.bytes().await.context("failed to read file data")?;
+        client
+            .write()
+            .await
+            .register_new_client_file(&filename, file_data.to_vec())
+            .await
+            .context("failed to register new client file")?;
+    }
+
+    Ok(())
+}
+
+#[derive(Debug)]
 struct ApiError(anyhow::Error);
 
 // Tell axum how to convert `AppError` into a response.
@@ -62,14 +120,14 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Something went wrong: {}", self.0),
+            format!("Something went wrong: {:?}", self.0),
         )
             .into_response()
     }
 }
 
 // This enables using `?` on functions that return `Result<_, anyhow::Error>` to turn them into
-// `Result<_, AppError>`. That way you don't need to do that manually.
+// `Result<_, AppError>`.
 impl<E> From<E> for ApiError
 where
     E: Into<anyhow::Error>,

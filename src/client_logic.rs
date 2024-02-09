@@ -1,17 +1,14 @@
-use core::time;
-use std::{collections::HashMap, path::PathBuf};
-
 use anyhow::Context;
-use tokio::{
-    net::TcpListener,
-    sync::{oneshot, Mutex},
-    time::timeout,
-};
+use std::path::PathBuf;
+use tokio::sync::Mutex;
 use tracing::instrument;
 
 use crate::modules::{
-    chunks::SingleFileChunksState,
+    chunks::{
+        determine_chunk_size, load_from_directory, DeterminedChunkSize, SingleFileChunksState,
+    },
     connected_session::{ConnectedSession, TokioSocketWrapper},
+    files::SingleChunkedFile,
 };
 
 mod client_proto {
@@ -40,7 +37,6 @@ impl TorrentClient {
     pub fn new<P: Into<PathBuf>>(
         file_directory: P,
         states_directory: P,
-        existing_chunk_states: Vec<SingleFileChunksState>,
         server_session: ConnectedSession<TokioSocketWrapper>,
     ) -> Self {
         Self {
@@ -51,24 +47,68 @@ impl TorrentClient {
         }
     }
 
-    // #[instrument(skip(self))]
-    // pub async fn continue_downloading_files(&mut self) -> anyhow::Result<()> {
-    //     let files_to_continue_downloading: Vec<_> = self
-    //         .chunk_states_communication
-    //         .chunk_states
-    //         .get_all_non_completed_files()
-    //         .cloned()
-    //         .collect();
+    ///
+    /// Lists the locally stored chunks states files
+    #[instrument(skip(self))]
+    pub async fn list_local_files(&self) -> anyhow::Result<Vec<SingleFileChunksState>> {
+        load_from_directory(&self.states_directory)
+            .await
+            .context("failed to list local files")
+    }
 
-    //     for filename in files_to_continue_downloading {
-    //         self.continue_downloading_existing_file(&filename)
-    //             .await
-    //             .with_context(|| format!("failed to continue downloading file: {}", filename))?;
-    //     }
+    ///
+    /// Registers a new file the client wants to share with the server and other clients.
+    /// This will write the file to the files directory, and create a new chunk state file for it.
+    /// Then, it will send the metadata to the server.
+    #[instrument(skip(self, file_data), err(Debug))]
+    pub async fn register_new_client_file(
+        &mut self,
+        filename: &str,
+        file_data: Vec<u8>,
+    ) -> anyhow::Result<()> {
+        tracing::info!("registering new client file");
+        let DeterminedChunkSize {
+            num_chunks,
+            chunk_size,
+        } = determine_chunk_size(file_data.len() as u64);
 
-    //     Ok(())
-    // }
+        let chunk_state_file = SingleFileChunksState::new_existing_file(
+            filename,
+            &self.states_directory,
+            num_chunks,
+            chunk_size,
+        );
 
+        let server_update_message = client_proto::UpdateNewAvailableFileOnClient {
+            filename: filename.to_string(),
+            num_chunks,
+            chunk_size,
+        };
+
+        let request = client_proto::RequestToServer {
+            request: Some(
+                client_proto::request_to_server::Request::UpdateNewAvailableFileOnClient(
+                    server_update_message,
+                ),
+            ),
+        };
+        let mut server_session = self.server_session.lock().await;
+
+        let (serialize_state_result, write_data_file_result, send_update_to_server_result) = tokio::join!(
+            chunk_state_file.serialize_to_file(),
+            SingleChunkedFile::with_existing_data(self.file_directory.join(filename), file_data),
+            server_session.send_msg(&request)
+        );
+
+        serialize_state_result.context("failed to serialize chunk state")?;
+        write_data_file_result.context("failed to write file data")?;
+        send_update_to_server_result.context("failed to update new available file on client")?;
+
+        Ok(())
+    }
+
+    ///
+    /// List the files that are available on the server to download
     #[instrument(skip(self))]
     pub async fn list_files_from_server(
         &mut self,
@@ -90,34 +130,5 @@ impl TorrentClient {
             .context("empty response to list files request")?;
 
         Ok(response.files)
-    }
-
-    #[instrument(skip(self))]
-    pub async fn send_available_file_metadata_to_server(
-        &mut self,
-        filename: &str,
-        num_chunks: u64,
-        chunk_size: u64,
-    ) -> anyhow::Result<()> {
-        let update_file_request = client_proto::UpdateNewAvailableFileOnClient {
-            filename: filename.to_string(),
-            num_chunks,
-            chunk_size,
-        };
-        let request = client_proto::RequestToServer {
-            request: Some(
-                client_proto::request_to_server::Request::UpdateNewAvailableFileOnClient(
-                    update_file_request,
-                ),
-            ),
-        };
-        self.server_session
-            .lock()
-            .await
-            .send_msg(&request)
-            .await
-            .context("failed to send available files metadata request")?;
-
-        Ok(())
     }
 }

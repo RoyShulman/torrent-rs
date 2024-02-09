@@ -51,7 +51,7 @@ async fn setup_client(args: &Args) -> anyhow::Result<TorrentClient> {
     Ok(TorrentClient::new(
         &args.files_directory,
         &args.states_directory,
-        existing_chunk_states,
+        // existing_chunk_states,
         server_session,
     ))
 }

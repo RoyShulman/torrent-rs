@@ -44,7 +44,7 @@ pub struct SingleFileChunksState {
     /// A hashset of chunk numbers that are still missing and need to be downloaded.
     pub missing_chunks: HashSet<u64>,
     ///
-    /// The size of each chunk.
+    /// The size of each chunk. Note the last chunk might be smaller than this size.
     pub chunk_size: u64,
     ///
     /// The directory where this file is stored.
@@ -113,11 +113,14 @@ impl SingleFileChunksState {
     ///
     /// Serialize the given state to a JSON string and write it to the given path.
     #[tracing::instrument(skip(self), err(Debug))]
-    async fn serialize_to_file(&self) -> anyhow::Result<()> {
+    pub async fn serialize_to_file(&self) -> anyhow::Result<()> {
         let serialized = serde_json::to_string(self).context("failed to serialize state")?;
 
         tokio::fs::write(
-            &self.chunk_states_directory.join(&self.filename),
+            &self
+                .chunk_states_directory
+                .join(&self.filename)
+                .with_extension("json"),
             serialized,
         )
         .await
@@ -163,6 +166,11 @@ pub async fn load_from_directory<P: AsRef<Path>>(
     while let Some(entry) = dir.next_entry().await.context("failed to read entry")? {
         let path = entry.path();
 
+        // skip non json files
+        if path.extension().map(|ext| ext != "json").unwrap_or(true) {
+            continue;
+        }
+
         let content = match read_to_string(&path).await {
             Ok(content) => content,
             Err(err) => {
@@ -183,6 +191,34 @@ pub async fn load_from_directory<P: AsRef<Path>>(
     }
 
     Ok(chunk_states)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct DeterminedChunkSize {
+    pub chunk_size: u64,
+    pub num_chunks: u64,
+}
+
+///
+/// Given a file size, determines the ideal chunk size to split the file into.
+pub fn determine_chunk_size(file_size: u64) -> DeterminedChunkSize {
+    let max_chunk_size = 1024 * 1024 * 10; // 10MB
+    let min_chunk_size = 1024 * 1024; // 1MB
+
+    let chunk_size = if file_size < min_chunk_size {
+        file_size
+    } else if file_size > max_chunk_size {
+        max_chunk_size
+    } else {
+        // If the file size is between the min and max chunk size, we split it into 10 chunks
+        file_size / 10
+    };
+
+    let nun_chunks = (file_size + chunk_size - 1) / chunk_size;
+    DeterminedChunkSize {
+        chunk_size,
+        num_chunks: nun_chunks,
+    }
 }
 
 #[cfg(test)]
@@ -310,5 +346,60 @@ mod tests {
                 }
             ]
         );
+    }
+
+    #[test]
+    fn test_determine_chunk_size() {
+        assert_eq!(
+            determine_chunk_size(10),
+            DeterminedChunkSize {
+                chunk_size: 10,
+                num_chunks: 1,
+            }
+        ); // 10 bytes
+        assert_eq!(
+            determine_chunk_size(1024),
+            DeterminedChunkSize {
+                chunk_size: 1024,
+                num_chunks: 1,
+            }
+        ); // 1 KB
+        assert_eq!(
+            determine_chunk_size(5 * 1024 * 1024),
+            DeterminedChunkSize {
+                chunk_size: 524288,
+                num_chunks: 10,
+            }
+        ); // 5MB
+
+        assert_eq!(
+            determine_chunk_size(1024 * 1024 * 10),
+            DeterminedChunkSize {
+                chunk_size: 1024 * 1024 * 1,
+                num_chunks: 10,
+            }
+        ); // 10 MB
+
+        assert_eq!(
+            determine_chunk_size(1024 * 1024 * 10 + 1),
+            DeterminedChunkSize {
+                chunk_size: 1024 * 1024 * 10,
+                num_chunks: 2,
+            }
+        ); // 10MB + 1
+        assert_eq!(
+            determine_chunk_size(1024 * 1024 * 20),
+            DeterminedChunkSize {
+                chunk_size: 1024 * 1024 * 10,
+                num_chunks: 2,
+            }
+        ); // 20 MB
+        assert_eq!(
+            determine_chunk_size(1024 * 1024 * 20 + 5),
+            DeterminedChunkSize {
+                chunk_size: 1024 * 1024 * 10,
+                num_chunks: 3,
+            }
+        ); // 20 MB + 5
     }
 }
