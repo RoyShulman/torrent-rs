@@ -131,4 +131,35 @@ impl TorrentClient {
 
         Ok(response.files)
     }
+
+    pub async fn delete_file(&mut self, filename: &str) -> anyhow::Result<()> {
+        let request = client_proto::UpdateFileRemovedFromClient {
+            filename: filename.to_string(),
+        };
+        let request = client_proto::RequestToServer {
+            request: Some(
+                client_proto::request_to_server::Request::UpdateFileRemovedFromClient(request),
+            ),
+        };
+
+        let mut server_session = self.server_session.lock().await;
+        server_session
+            .send_msg(&request)
+            .await
+            .context("failed to send delete file request")?;
+
+        let state_file = SingleFileChunksState::from_filename(&self.states_directory, filename)
+            .await
+            .context("failed to load chunk state file")?;
+        state_file
+            .delete_file()
+            .await
+            .context("failed to delete chunk state file")?;
+
+        let data_file = SingleChunkedFile::new(&self.file_directory.join(filename));
+        data_file
+            .delete()
+            .await
+            .context("failed to delete data file")
+    }
 }

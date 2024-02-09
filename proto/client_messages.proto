@@ -16,10 +16,15 @@ message UpdateNewAvailableFileOnClient {
     uint64 chunk_size = 3;
 }
 
+message UpdateFileRemovedFromClient {
+    string filename = 1;
+}
+
 message RequestToServer {
     oneof request {
         DownloadFile download_file = 1;
         ListAvailableFilesRequest list_available_files = 2;
         UpdateNewAvailableFileOnClient update_new_available_file_on_client = 3;
+        UpdateFileRemovedFromClient update_file_removed_from_client = 4;
     }
 }

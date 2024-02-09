@@ -42,6 +42,44 @@ pub async fn handle_client_request(
                 .await
                 .context("failed to handle new file on client")
         }
+        client_proto::request_to_server::Request::UpdateFileRemovedFromClient(request) => {
+            handle_file_removed_from_client(request, files_directory, &connected_client.peer_addr)
+                .await
+                .context("failed to handle file removed from client")
+        }
+    }
+}
+
+#[instrument(err(Debug))]
+async fn handle_file_removed_from_client(
+    request: client_proto::UpdateFileRemovedFromClient,
+    files_directory: &Path,
+    peer_addr: &std::net::SocketAddr,
+) -> anyhow::Result<()> {
+    tracing::info!("Handling file removed from client request: {:?}", request);
+
+    let metadata_file = files_directory.join(format!("{}.json", request.filename));
+
+    if !metadata_file.exists() {
+        return Ok(());
+    }
+
+    let file_data = read_to_string(&metadata_file)
+        .await
+        .context("failed to read file data")?;
+
+    let mut file_data: AvailableFile =
+        serde_json::from_str(&file_data).context("failed to deserialize file")?;
+    file_data.peers.remove(&peer_addr.ip().to_string());
+    if file_data.peers.is_empty() {
+        tokio::fs::remove_file(metadata_file)
+            .await
+            .context("failed to remove metadata file")
+    } else {
+        let serialized = serde_json::to_string(&file_data).context("failed to serialize file")?;
+        tokio::fs::write(metadata_file, serialized)
+            .await
+            .context("failed to write file data")
     }
 }
 
@@ -65,7 +103,7 @@ async fn handle_new_file_on_client(
 
         serde_json::from_str(&file_data).context("failed to deserialize file")?
     } else {
-        AvilableFile {
+        AvailableFile {
             filename: request.filename,
             num_chunks: request.num_chunks,
             chunk_size: request.chunk_size,
@@ -84,7 +122,7 @@ async fn handle_new_file_on_client(
 /// Struct that represents an available file on the network.
 /// The server keeps track of all the peers that have the file.
 #[derive(Debug, Serialize, Deserialize)]
-struct AvilableFile {
+struct AvailableFile {
     filename: String,
     num_chunks: u64,
     chunk_size: u64,
@@ -111,7 +149,7 @@ async fn get_available_files_response(
             .await
             .context("failed to read file data")?;
 
-        let file: AvilableFile =
+        let file: AvailableFile =
             serde_json::from_str(&file_data).context("failed to deserialize file")?;
         files.push(file);
     }
@@ -159,7 +197,7 @@ mod tests {
     #[tokio::test]
     async fn test_list_available_files() {
         let directory = tempdir().unwrap();
-        let file1 = AvilableFile {
+        let file1 = AvailableFile {
             filename: "file1".to_string(),
             num_chunks: 5,
             chunk_size: 10,
@@ -209,7 +247,7 @@ mod tests {
         let file_data = read_to_string(directory.path().join("file1.json"))
             .await
             .unwrap();
-        let file: AvilableFile = serde_json::from_str(&file_data).unwrap();
+        let file: AvailableFile = serde_json::from_str(&file_data).unwrap();
         assert_eq!(file.filename, "file1");
         assert_eq!(file.num_chunks, 5);
         assert_eq!(file.chunk_size, 10);
@@ -219,7 +257,7 @@ mod tests {
     #[tokio::test]
     async fn test_handle_new_file_on_client_existing_file() {
         let directory = tempdir().unwrap();
-        let file = AvilableFile {
+        let file = AvailableFile {
             filename: "file1".to_string(),
             num_chunks: 5,
             chunk_size: 10,
@@ -246,7 +284,7 @@ mod tests {
             .await
             .unwrap();
 
-        let file: AvilableFile = serde_json::from_str(&file_data).unwrap();
+        let file: AvailableFile = serde_json::from_str(&file_data).unwrap();
         assert_eq!(file.filename, "file1");
         assert_eq!(file.num_chunks, 5);
         assert_eq!(file.chunk_size, 10);

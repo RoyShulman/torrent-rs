@@ -145,6 +145,17 @@ impl SingleFileChunksState {
     pub fn get_chunk_offset(&self, chunk_index: u64) -> u64 {
         chunk_index * self.chunk_size
     }
+
+    pub async fn delete_file(&self) -> anyhow::Result<()> {
+        tokio::fs::remove_file(
+            &self
+                .chunk_states_directory
+                .join(&self.filename)
+                .with_extension("json"),
+        )
+        .await
+        .context("failed to delete file")
+    }
 }
 
 ///

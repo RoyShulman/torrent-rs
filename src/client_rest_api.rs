@@ -4,7 +4,7 @@ use anyhow::Context;
 use axum::{
     extract::{DefaultBodyLimit, Multipart, State},
     http::StatusCode,
-    response::{IntoResponse, Response},
+    response::{Html, IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
@@ -12,7 +12,7 @@ use axum_macros::debug_handler;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio::sync::RwLock;
+use tokio::{fs::File, io::AsyncReadExt, sync::RwLock};
 use tracing::instrument;
 
 use crate::{client_logic::TorrentClient, modules::chunks::SingleFileChunksState};
@@ -25,8 +25,10 @@ pub fn get_client_router(client: TorrentClient) -> Router {
         .route("/list_local_files", get(handle_list_local_files))
         .route("/upload_new_client_file", post(handle_upload_file))
         .route("/healthcheck", get(handle_healthcheck))
+        .route("/delete_file", post(handle_delete_file))
         .layer(DefaultBodyLimit::disable())
         .with_state(Arc::new(RwLock::new(client)));
+
     router
 }
 
@@ -108,6 +110,29 @@ async fn handle_upload_file(
             .await
             .context("failed to register new client file")?;
     }
+
+    Ok(())
+}
+
+#[derive(Deserialize)]
+struct DeleteFileRequest {
+    filename: String,
+}
+
+///
+/// Remove a file stored on the client. This will also notify the server about the file removal,
+/// so it won't advertise this client as a peer for this file anymore.
+async fn handle_delete_file(
+    State(client): State<ClientState>,
+    Json(request): Json<DeleteFileRequest>,
+) -> Result<(), ApiError> {
+    tracing::info!("Handling delete file request");
+    client
+        .write()
+        .await
+        .delete_file(&request.filename)
+        .await
+        .context("failed to delete file")?;
 
     Ok(())
 }

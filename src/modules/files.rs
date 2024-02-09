@@ -99,6 +99,12 @@ impl SingleChunkedFile {
 
         Ok(())
     }
+
+    pub async fn delete(&self) -> anyhow::Result<()> {
+        tokio::fs::remove_file(&self.path)
+            .await
+            .context("failed to delete file")
+    }
 }
 
 #[cfg(test)]
