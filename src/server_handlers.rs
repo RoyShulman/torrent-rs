@@ -1,4 +1,4 @@
-use std::{collections::HashSet, path::Path};
+use std::{collections::HashSet, net::SocketAddrV4, path::Path};
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
@@ -31,7 +31,11 @@ pub async fn handle_client_request(
     };
 
     match request {
-        client_proto::request_to_server::Request::DownloadFile(_) => todo!(),
+        client_proto::request_to_server::Request::DownloadFile(request) => {
+            handle_download_file(request, connected_client, files_directory)
+                .await
+                .context("failed to handle download file")
+        }
         client_proto::request_to_server::Request::ListAvailableFiles(_) => {
             handle_list_available_files(connected_client, files_directory)
                 .await
@@ -48,6 +52,51 @@ pub async fn handle_client_request(
                 .context("failed to handle file removed from client")
         }
     }
+}
+
+#[instrument(err(Debug))]
+async fn handle_download_file(
+    request: client_proto::DownloadFile,
+    connected_client: &mut ConnectedClient,
+    files_directory: &Path,
+) -> anyhow::Result<()> {
+    tracing::info!("Handling download file request: {:?}", request);
+
+    let metadata_file = files_directory.join(format!("{}.json", request.filename));
+
+    let file_data = read_to_string(&metadata_file)
+        .await
+        .context("failed to read file data")?;
+
+    let file_data: AvailableFile =
+        serde_json::from_str(&file_data).context("failed to deserialize file")?;
+
+    let response = server_proto::DownloadFileResponse {
+        num_chunks: file_data.num_chunks,
+        chunk_size: file_data.chunk_size,
+        file_size: file_data.file_size,
+        peers: file_data
+            .peers
+            .into_iter()
+            .filter_map(|peer| {
+                let socket_addr = peer.parse::<SocketAddrV4>().ok()?;
+                Some(server_proto::Peer {
+                    ip: (*socket_addr.ip()).into(),
+                    port: socket_addr.port() as u32,
+                })
+            })
+            .collect(),
+    };
+
+    tracing::info!("Sending download file response: {:?}", response);
+
+    connected_client
+        .session
+        .send_msg(&response)
+        .await
+        .context("failed to send download file response")?;
+
+    Ok(())
 }
 
 #[instrument(err(Debug))]
@@ -70,7 +119,14 @@ async fn handle_file_removed_from_client(
 
     let mut file_data: AvailableFile =
         serde_json::from_str(&file_data).context("failed to deserialize file")?;
-    file_data.peers.remove(&peer_addr.ip().to_string());
+
+    let ip_v4 = match peer_addr.ip() {
+        std::net::IpAddr::V4(ip_v4) => ip_v4,
+        _ => anyhow::bail!("peer address is not ipv4"),
+    };
+    let port = request.port.try_into().context("port too large")?;
+    let addr = SocketAddrV4::new(ip_v4, port);
+    file_data.peers.remove(&addr.to_string());
     if file_data.peers.is_empty() {
         tokio::fs::remove_file(metadata_file)
             .await
@@ -112,7 +168,20 @@ async fn handle_new_file_on_client(
         }
     };
 
-    file_data.peers.insert(peer_addr.ip().to_string());
+    anyhow::ensure!(
+        request.peer_port < u16::MAX as u32,
+        "peer port too large ({} > {})",
+        request.peer_port,
+        u16::MAX
+    );
+    let ip_v4 = match peer_addr.ip() {
+        std::net::IpAddr::V4(ip_v4) => ip_v4,
+        _ => anyhow::bail!("peer address is not ipv4"),
+    };
+
+    let peer = SocketAddrV4::new(ip_v4, request.peer_port as u16);
+
+    file_data.peers.insert(peer.to_string());
     let serialized = serde_json::to_string(&file_data).context("failed to serialize file")?;
     tokio::fs::write(metadata_file, serialized)
         .await

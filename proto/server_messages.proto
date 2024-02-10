@@ -16,6 +16,7 @@ message ListAvailableFilesResponse {
 
 message Peer {
     uint32 ip = 1;
+    uint32 port = 2;
 }
 
 message DownloadFileResponse {

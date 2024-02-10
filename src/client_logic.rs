@@ -30,7 +30,7 @@ mod server_proto {
 pub struct TorrentClient {
     file_directory: PathBuf,
     states_directory: PathBuf,
-    peer_port: u16,
+    peer_listening_port: u16,
 
     ///
     /// This needs to be a mutex because when sending messages to the server, we need the response to be in order
@@ -56,7 +56,7 @@ impl TorrentClient {
             server_session: Arc::new(Mutex::new(server_session)),
             currently_downloading: HashMap::new(),
             done_receivers: FuturesUnordered::new(),
-            peer_port,
+            peer_listening_port: peer_port,
         }
     }
 
@@ -98,6 +98,7 @@ impl TorrentClient {
             num_chunks,
             chunk_size,
             file_size: file_data.len() as u64,
+            peer_port: self.peer_listening_port as u32,
         };
 
         let request = client_proto::RequestToServer {
@@ -155,6 +156,7 @@ impl TorrentClient {
     pub async fn delete_file(&mut self, filename: &str) -> anyhow::Result<()> {
         let request = client_proto::UpdateFileRemovedFromClient {
             filename: filename.to_string(),
+            port: self.peer_listening_port as u32,
         };
         let request = client_proto::RequestToServer {
             request: Some(
@@ -204,7 +206,7 @@ impl TorrentClient {
             file_size,
             chunk_states_directory: self.states_directory.clone(),
             data_files_directory: self.file_directory.clone(),
-            peer_port: self.peer_port,
+            peer_listening_port: self.peer_listening_port,
         };
 
         let initialized = context_builer

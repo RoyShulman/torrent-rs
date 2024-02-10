@@ -15,10 +15,12 @@ message UpdateNewAvailableFileOnClient {
     uint64 num_chunks = 2;
     uint64 chunk_size = 3;
     uint64 file_size = 4;
+    uint32 peer_port = 5;
 }
 
 message UpdateFileRemovedFromClient {
     string filename = 1;
+    uint32 port = 2;
 }
 
 message RequestToServer {

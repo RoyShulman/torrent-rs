@@ -64,23 +64,25 @@ pub struct DownloadFileContextBuilder<T> {
 
     pub chunk_states_directory: PathBuf,
     pub data_files_directory: PathBuf,
-    pub peer_port: u16,
+    pub peer_listening_port: u16,
 }
 
 pub struct InitializedDownloadFileContext<T> {
     filename: String,
     server_session: Arc<Mutex<ConnectedSession<T>>>,
-    peer_port: u16,
     downloaded_chunks: u64,
+    peer_listener_port: u16,
 
     chunks_state: SingleFileChunksState,
     data_file: SingleChunkedFile,
 
     current_peers: Vec<DownloadFilePeer<T>>,
     last_peer_update: std::time::Instant,
+    notified_server: bool,
 }
 
 impl<T> DownloadFileContextBuilder<T> {
+    #[tracing::instrument(skip(self), fields(filename = %self.filename, num_chunks = self.num_chunks, chunk_size = self.chunk_size, file_size = self.file_size), err(Debug))]
     pub async fn build(self) -> anyhow::Result<InitializedDownloadFileContext<T>> {
         let chunks_state = chunks::find_or_create_chunk_state(
             &self.chunk_states_directory,
@@ -93,6 +95,13 @@ impl<T> DownloadFileContextBuilder<T> {
         .context("failed to find or create chunk state")?;
 
         let data_file = SingleChunkedFile::new(self.data_files_directory.join(&self.filename));
+        if chunks_state.get_available_chunks().is_empty() {
+            // The file is just starting to download, we need to create the file
+            data_file
+                .create(self.file_size)
+                .await
+                .context("failed to create file")?;
+        }
 
         Ok(InitializedDownloadFileContext {
             filename: self.filename,
@@ -100,9 +109,10 @@ impl<T> DownloadFileContextBuilder<T> {
             chunks_state,
             data_file,
             current_peers: Vec::new(),
-            peer_port: self.peer_port,
             last_peer_update: std::time::Instant::now(),
             downloaded_chunks: 0,
+            notified_server: false,
+            peer_listener_port: self.peer_listening_port,
         })
     }
 }
@@ -165,6 +175,8 @@ where
                                         result: DownloadFileResultInner::Error,
                                     };
 
+                                    tracing::info!("finished download");
+
                                     if let Err(_) = result_sender.send(result) {
                                         tracing::error!("Failed to send success result");
                                     }
@@ -178,6 +190,8 @@ where
                                         filename: self.filename,
                                         result: DownloadFileResultInner::Error,
                                     };
+
+                                    tracing::warn!("Downloading filed");
                                     if let Err(_) = result_sender.send(result) {
                                         tracing::error!("Failed to send error result");
                                     }
@@ -205,6 +219,8 @@ where
         &mut self,
         state_sender: &mut watch::Sender<DownloadFileState>,
     ) -> SingleLoopResult {
+        // sleep for 5 seconds just to make things more visible
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         match self.single_loop_iteration(state_sender).await {
             Ok(result) => {
                 if let Err(e) = state_sender.send(DownloadFileState {
@@ -278,6 +294,33 @@ where
             self.downloaded_chunks += 1;
         }
 
+        if self.downloaded_chunks > 0 && !self.notified_server {
+            // Update the server we also have chunks of the file
+            let server_update_message = client_proto::UpdateNewAvailableFileOnClient {
+                filename: self.filename.clone(),
+                num_chunks: self.chunks_state.num_chunks,
+                chunk_size: self.chunks_state.chunk_size,
+                file_size: self.chunks_state.file_size,
+                peer_port: self.peer_listener_port as u32,
+            };
+
+            let request = client_proto::RequestToServer {
+                request: Some(
+                    client_proto::request_to_server::Request::UpdateNewAvailableFileOnClient(
+                        server_update_message,
+                    ),
+                ),
+            };
+            let mut server_session = self.server_session.lock().await;
+
+            server_session
+                .send_msg(&request)
+                .await
+                .context("failed to update new available file on client")?;
+
+            self.notified_server = true;
+        }
+
         if self.chunks_state.missing_chunks.is_empty() {
             Ok(SingleLoopResult::Finished)
         } else {
@@ -295,8 +338,10 @@ where
         let mut requests = FuturesUnordered::new();
         for peer in self.current_peers.drain(..) {
             let filename = self.filename.clone();
-            requests.push(get_chunks_on_peer(peer, filename));
+            requests.push(list_chunks_on_peer(peer, filename));
         }
+
+        tracing::info!("requesting chunks from {} peers", requests.len());
 
         let mut chunks_for_peers = HashMap::new();
         let _ = timeout(REQUEST_CHUNKS_TIMEOUT, async {
@@ -328,6 +373,7 @@ where
         &mut self,
         mut chunks_for_peers: HashMap<SocketAddrV4, u64>,
     ) -> Vec<DownloadedChunk> {
+        tracing::info!("requesting chunks from peers: {:?}", chunks_for_peers);
         let mut requests = FuturesUnordered::new();
         let mut no_requested_peers = Vec::new();
         for peer in self.current_peers.drain(..) {
@@ -367,6 +413,8 @@ where
 
     ///
     /// Send a request to the server to get the list of peers for the currently downloading file.
+    /// NOTE: We currently check if we should download from a peer only if he has a different port from us.
+    /// This is a simple way to avoid downloading from ourselves, done for simplicity for now.
     #[tracing::instrument(skip(self))]
     async fn update_current_peers(&mut self) -> anyhow::Result<()> {
         tracing::info!("updating current peers");
@@ -385,38 +433,47 @@ where
             .await
             .context("failed to send download file request")?;
 
-        let response: server_proto::DownloadFileResponse = server_session
+        let mut response: server_proto::DownloadFileResponse = server_session
             .recv_msg()
             .await
             .context("failed to receive download file response")?
             .context("empty response to download file request")?;
 
-        let peers: HashSet<u32> = response.peers.iter().map(|x| x.ip).collect();
-        let current_peers: HashSet<u32> = self
-            .current_peers
-            .iter()
-            .map(|x| x.peer_addr.ip().clone().into())
-            .collect();
+        response
+            .peers
+            .retain(|x| x.port != self.peer_listener_port as u32);
 
-        let to_remove: HashSet<_> = current_peers.difference(&peers).collect();
-        let to_add: HashSet<_> = peers.difference(&current_peers).collect();
+        let peers: HashSet<_> = response
+            .peers
+            .into_iter()
+            .filter_map(|peer| {
+                Some(SocketAddrV4::new(
+                    peer.ip.into(),
+                    peer.port.try_into().ok()?,
+                ))
+            })
+            .collect();
+        let current_peers: HashSet<_> = self.current_peers.iter().map(|x| x.peer_addr).collect();
+
+        let peers_cloned = peers.clone();
+        let to_remove: HashSet<_> = current_peers.difference(&peers_cloned).collect();
+        let to_add: HashSet<_> = peers_cloned.difference(&current_peers).collect();
 
         // Remove all peers that no longer serve the file
         self.current_peers
-            .retain(|peer| to_remove.contains(&Into::<u32>::into(*peer.peer_addr.ip())));
+            .retain(|peer| !to_remove.contains(&peer.peer_addr));
 
         let mut new_peer_connections = FuturesUnordered::new();
         // Add new peers
-        for peer in response.peers {
-            if !to_add.contains(&peer.ip) {
+        for peer in peers {
+            if !to_add.contains(&peer) {
                 continue;
             }
 
-            // This is a new peer that was added, we need to option a connection to it
-            let addr = SocketAddrV4::new(peer.ip.into(), self.peer_port);
+            // This is a new peer that was added, we need to open a connection to it
             let future = FutureWithPeerAddr {
-                peer_addr: addr,
-                future: ConnectedSession::connect(addr),
+                peer_addr: peer,
+                future: ConnectedSession::connect(peer),
             };
             new_peer_connections.push(future);
         }
@@ -431,6 +488,7 @@ where
                 }
             };
 
+            tracing::info!("connected to new peer: {}", peer_addr);
             self.current_peers.push(DownloadFilePeer {
                 session: peer_connection,
                 peer_addr,
@@ -482,12 +540,12 @@ where
 /// We ignore this for simplicity.
 fn get_next_chunk_for_peers(
     missing_chunks: &HashSet<u64>,
-    chunks_for_peers: &HashMap<SocketAddrV4, HashSet<u64>>,
+    all_chunks_by_peer: &HashMap<SocketAddrV4, HashSet<u64>>,
 ) -> HashMap<SocketAddrV4, u64> {
     let mut chunks_by_availability = missing_chunks
         .iter()
         .map(|chunk| {
-            let num_peers = chunks_for_peers
+            let num_peers = all_chunks_by_peer
                 .values()
                 .filter(|chunks| chunks.contains(chunk))
                 .count();
@@ -497,22 +555,27 @@ fn get_next_chunk_for_peers(
 
     chunks_by_availability.sort_by_key(|(_, num_peers)| *num_peers);
 
-    let mut chunk_for_peer = HashMap::new();
+    let mut chosen_chunk_for_peer = HashMap::new();
     for (chunk_index, num_peers) in chunks_by_availability {
+        if chosen_chunk_for_peer.len() == all_chunks_by_peer.len() {
+            // We have assigned a chunk to each peer
+            break;
+        }
+
         if num_peers == 0 {
             // No peers have this chunk - better luck next time
             continue;
         }
 
-        for (peer, chunks) in chunks_for_peers {
-            if chunks.contains(chunk_index) {
-                chunk_for_peer.insert(*peer, *chunk_index);
+        for (peer, peer_chunks) in all_chunks_by_peer {
+            if peer_chunks.contains(chunk_index) && !chosen_chunk_for_peer.contains_key(peer) {
+                chosen_chunk_for_peer.insert(*peer, *chunk_index);
                 break;
             }
         }
     }
 
-    chunk_for_peer
+    chosen_chunk_for_peer
 }
 
 struct ChunksOnPeerResponse<S> {
@@ -533,10 +596,11 @@ struct ChunkResponse<S> {
 ///
 /// Send a request to a peer to get the list of chunks it has for a file.
 #[tracing::instrument(skip(peer_connection))]
-async fn get_chunks_on_peer<S: SocketWrapper>(
+async fn list_chunks_on_peer<S: SocketWrapper>(
     mut peer_connection: DownloadFilePeer<S>,
     filename: String,
 ) -> anyhow::Result<ChunksOnPeerResponse<S>> {
+    tracing::info!(peer_addr=%peer_connection.peer_addr, "list chunks on peer");
     let request = peer_proto::ListAvailableChunks { filename };
     let request = peer_proto::PeerRequest {
         request: Some(peer_proto::peer_request::Request::ListAvailableChunks(

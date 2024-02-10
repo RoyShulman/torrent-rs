@@ -106,6 +106,7 @@ impl ConnectedPeer {
         &self,
         filename: &str,
     ) -> anyhow::Result<peer_proto::AvailableChunksResponse> {
+        tracing::info!("Handling list available chunks for file");
         let state_file = SingleFileChunksState::from_filename(&self.states_directory, filename)
             .await
             .context("failed to load state")?;
@@ -121,6 +122,7 @@ impl ConnectedPeer {
         filename: &str,
         chunk_index: u64,
     ) -> anyhow::Result<peer_proto::ChunkResponse> {
+        tracing::info!("Handling download chunk request");
         let state_file = SingleFileChunksState::from_filename(&self.states_directory, filename)
             .await
             .context("failed to load state")?;

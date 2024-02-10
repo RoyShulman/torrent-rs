@@ -40,9 +40,11 @@ pub struct CurrentlyDowloadingFile {
     pub peers: Vec<String>,
 }
 
+#[instrument(skip(client))]
 async fn handle_currently_downloading(
     State(client): State<ClientState>,
 ) -> Result<Json<Vec<CurrentlyDowloadingFile>>, ApiError> {
+    tracing::info!("Handling currently downloading request");
     let mut client = client.write().await;
 
     let currently_downloading = client.get_downloading_progress().await;
@@ -157,7 +159,7 @@ async fn handle_delete_file(
     Ok(())
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct DownloadFileRequest {
     filename: String,
     chunk_size: u64,
@@ -165,6 +167,7 @@ struct DownloadFileRequest {
     file_size: u64,
 }
 
+#[instrument(skip(client))]
 async fn handle_download_file(
     State(client): State<ClientState>,
     Json(request): Json<DownloadFileRequest>,
@@ -175,8 +178,8 @@ async fn handle_download_file(
         .await
         .download_file(
             &request.filename,
-            request.chunk_size,
             request.num_chunks,
+            request.chunk_size,
             request.file_size,
         )
         .await
