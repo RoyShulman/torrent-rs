@@ -1,12 +1,12 @@
 use anyhow::Context;
-use axum::ServiceExt;
+
 use clap::Parser;
 use std::{future::IntoFuture, path::PathBuf};
-use tokio::{join, net::TcpListener, select, task::JoinHandle};
+use tokio::{join, select};
 use torrent_rs::{
     client_logic::TorrentClient,
     client_rest_api::get_client_router,
-    modules::{chunks::load_from_directory, connected_session::ConnectedSession},
+    modules::connected_session::ConnectedSession,
     peer_listener::setup_peer_listener_task,
 };
 use tracing::instrument;

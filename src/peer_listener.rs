@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
-use tokio::{net::TcpListener, sync::oneshot, task::JoinHandle};
+use tokio::{net::TcpListener, task::JoinHandle};
 use tracing::instrument;
 
 use crate::{
@@ -35,6 +35,7 @@ mod peer_proto {
 impl ConnectedPeer {
     #[instrument(err(Debug))]
     pub async fn serve_forever(mut self) -> anyhow::Result<()> {
+        tracing::info!("Peer connected: {}", self.peer_addr);
         loop {
             let request = self
                 .session

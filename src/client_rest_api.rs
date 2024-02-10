@@ -4,7 +4,7 @@ use anyhow::Context;
 use axum::{
     extract::{DefaultBodyLimit, Multipart, State},
     http::StatusCode,
-    response::{Html, IntoResponse, Response},
+    response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
@@ -12,7 +12,7 @@ use axum_macros::debug_handler;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio::{fs::File, io::AsyncReadExt, sync::RwLock};
+use tokio::sync::RwLock;
 use tracing::instrument;
 
 use crate::{client_logic::TorrentClient, modules::chunks::SingleFileChunksState};
