@@ -106,7 +106,6 @@ def show_server_files(endpoint):
             show_api_request_fail(e)
             return
     time.sleep(2)
-    print("rerun in show server files")
     st.rerun()
 
 def get_chunk_percentage(row):
@@ -175,7 +174,6 @@ def show_local_files(endpoint):
             show_api_request_fail(e)
             return
     time.sleep(2)
-    print("rerun in show local files")
     st.rerun()
     
 
@@ -201,7 +199,6 @@ def show_upload_file(endpoint):
         st.session_state["file_uploader_key"] += 1
         return
     time.sleep(2)
-    print("rerun in show upload file")
     st.rerun()
 
 def run_health_check(endpoint):
