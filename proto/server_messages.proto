@@ -7,7 +7,8 @@ message ListAvailableFilesResponse {
         string filename = 1;
         uint64 chunk_size = 2;
         uint64 num_chunks = 3;
-        repeated string peers = 4;
+        uint64 file_size = 4;
+        repeated string peers = 5;
     }
 
     repeated SingleFile files = 1;
@@ -19,6 +20,7 @@ message Peer {
 
 message DownloadFileResponse {
     repeated Peer peers = 1;
-    uint64 num_chunks = 3;
-    uint64 chunk_size = 4;
+    uint64 num_chunks = 2;
+    uint64 chunk_size = 3;
+    uint64 file_Size = 4;
 }

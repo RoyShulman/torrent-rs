@@ -107,6 +107,7 @@ async fn handle_new_file_on_client(
             filename: request.filename,
             num_chunks: request.num_chunks,
             chunk_size: request.chunk_size,
+            file_size: request.file_size,
             peers: HashSet::new(),
         }
     };
@@ -126,6 +127,7 @@ struct AvailableFile {
     filename: String,
     num_chunks: u64,
     chunk_size: u64,
+    file_size: u64,
     peers: HashSet<String>,
 }
 
@@ -162,6 +164,7 @@ async fn get_available_files_response(
                 peers: file.peers.into_iter().collect(),
                 chunk_size: file.chunk_size,
                 num_chunks: file.num_chunks,
+                file_size: file.file_size,
             },
         )
         .collect();
@@ -201,6 +204,7 @@ mod tests {
             filename: "file1".to_string(),
             num_chunks: 5,
             chunk_size: 10,
+            file_size: 50,
             peers: HashSet::from_iter(["127.0.0.1".to_string()]),
         };
         serde_json::to_writer(
@@ -237,6 +241,7 @@ mod tests {
             filename: "file1".to_string(),
             num_chunks: 5,
             chunk_size: 10,
+            file_size: 50,
         };
 
         let peer_addr = "127.0.0.1:1".parse().unwrap();
@@ -261,6 +266,7 @@ mod tests {
             filename: "file1".to_string(),
             num_chunks: 5,
             chunk_size: 10,
+            file_size: 45,
             peers: HashSet::from_iter(["1.2.3.4".to_string()]),
         };
 
@@ -274,6 +280,7 @@ mod tests {
             filename: "file1".to_string(),
             num_chunks: 5,
             chunk_size: 10,
+            file_size: 47,
         };
         let peer_addr = "127.0.0.1:1".parse().unwrap();
         handle_new_file_on_client(request, directory.path(), &peer_addr)

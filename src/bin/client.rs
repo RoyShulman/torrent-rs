@@ -40,19 +40,15 @@ struct Args {
 
 #[instrument]
 async fn setup_client(args: &Args) -> anyhow::Result<TorrentClient> {
-    let (server_session, existing_chunk_states) = tokio::join!(
-        ConnectedSession::connect(&args.server_address),
-        load_from_directory(&args.states_directory),
-    );
-
-    let existing_chunk_states = existing_chunk_states.context("Failed to load chunk states")?;
-    let server_session = server_session.context("Failed to connect to server")?;
+    let server_session = ConnectedSession::connect(&args.server_address)
+        .await
+        .context("Failed to connect to server")?;
 
     Ok(TorrentClient::new(
         &args.files_directory,
         &args.states_directory,
-        // existing_chunk_states,
         server_session,
+        args.peer_port,
     ))
 }
 

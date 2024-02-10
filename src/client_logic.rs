@@ -1,14 +1,22 @@
 use anyhow::Context;
-use std::path::PathBuf;
-use tokio::sync::Mutex;
+use futures::{stream::FuturesUnordered, StreamExt};
+use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
+use tokio::{
+    sync::{oneshot, Mutex},
+    time::timeout,
+};
 use tracing::instrument;
 
-use crate::modules::{
-    chunks::{
-        determine_chunk_size, load_from_directory, DeterminedChunkSize, SingleFileChunksState,
+use crate::{
+    client_rest_api::CurrentlyDowloadingFile,
+    download_file::{DownloadFileContext, DownloadFileContextBuilder, DownloadFileResult},
+    modules::{
+        chunks::{
+            determine_chunk_size, load_from_directory, DeterminedChunkSize, SingleFileChunksState,
+        },
+        connected_session::{ConnectedSession, TokioSocketWrapper},
+        files::SingleChunkedFile,
     },
-    connected_session::{ConnectedSession, TokioSocketWrapper},
-    files::SingleChunkedFile,
 };
 
 mod client_proto {
@@ -22,15 +30,17 @@ mod server_proto {
 pub struct TorrentClient {
     file_directory: PathBuf,
     states_directory: PathBuf,
+    peer_port: u16,
 
     ///
     /// This needs to be a mutex because when sending messages to the server, we need the response to be in order
     /// and we can't have multiple threads sending messages at the same time.
-    server_session: Mutex<ConnectedSession<TokioSocketWrapper>>,
+    server_session: Arc<Mutex<ConnectedSession<TokioSocketWrapper>>>,
     //
     // A hashmap that stores all the currently downloading files.
+    currently_downloading: HashMap<String, DownloadFileContext>,
 
-    // currently_downloading: HashMap<String, CurrentlyDownloadingTask>,
+    done_receivers: FuturesUnordered<oneshot::Receiver<DownloadFileResult>>,
 }
 
 impl TorrentClient {
@@ -38,12 +48,15 @@ impl TorrentClient {
         file_directory: P,
         states_directory: P,
         server_session: ConnectedSession<TokioSocketWrapper>,
+        peer_port: u16,
     ) -> Self {
         Self {
             file_directory: file_directory.into(),
             states_directory: states_directory.into(),
-            server_session: Mutex::new(server_session),
-            // currently_downloading: HashMap::new(),
+            server_session: Arc::new(Mutex::new(server_session)),
+            currently_downloading: HashMap::new(),
+            done_receivers: FuturesUnordered::new(),
+            peer_port,
         }
     }
 
@@ -77,12 +90,14 @@ impl TorrentClient {
             &self.states_directory,
             num_chunks,
             chunk_size,
+            file_data.len() as u64,
         );
 
         let server_update_message = client_proto::UpdateNewAvailableFileOnClient {
             filename: filename.to_string(),
             num_chunks,
             chunk_size,
+            file_size: file_data.len() as u64,
         };
 
         let request = client_proto::RequestToServer {
@@ -132,6 +147,11 @@ impl TorrentClient {
         Ok(response.files)
     }
 
+    ///
+    /// Deletes a file store locally on the client. Does the following:
+    ///     - Sends a message to the server to remove the file from the server's list of available files
+    ///     - Deletes the chunk state file
+    ///     - Deletes the data file
     pub async fn delete_file(&mut self, filename: &str) -> anyhow::Result<()> {
         let request = client_proto::UpdateFileRemovedFromClient {
             filename: filename.to_string(),
@@ -161,5 +181,79 @@ impl TorrentClient {
             .delete()
             .await
             .context("failed to delete data file")
+    }
+
+    ///
+    /// Downloads a file from peers on the network. This will spawn a task that will download the file.
+    pub async fn download_file(
+        &mut self,
+        filename: &str,
+        num_chunks: u64,
+        chunk_size: u64,
+        file_size: u64,
+    ) -> anyhow::Result<()> {
+        if self.currently_downloading.contains_key(filename) {
+            anyhow::bail!("{filename} is already being downloaded");
+        }
+
+        let context_builer = DownloadFileContextBuilder {
+            filename: filename.to_string(),
+            server_session: self.server_session.clone(),
+            num_chunks,
+            chunk_size,
+            file_size,
+            chunk_states_directory: self.states_directory.clone(),
+            data_files_directory: self.file_directory.clone(),
+            peer_port: self.peer_port,
+        };
+
+        let initialized = context_builer
+            .build()
+            .await
+            .context("failed to initialize download file task")?;
+
+        let (context, done_receiver) = initialized.start_download();
+
+        self.done_receivers.push(done_receiver);
+
+        self.currently_downloading
+            .insert(filename.to_string(), context);
+
+        Ok(())
+    }
+
+    ///
+    /// Get the progress of all currently downloading tasks.
+    /// If any finished, it will remove them from the list of currently downloading tasks.
+    /// Otherwise, it will return the progress of how many chunks have been downloaded for each file.
+    pub async fn get_downloading_progress(&mut self) -> Vec<CurrentlyDowloadingFile> {
+        let mut completed_downloads = Vec::new();
+        let _ = timeout(Duration::from_millis(10), async {
+            while let Some(result) = self.done_receivers.next().await {
+                match result {
+                    Ok(result) => completed_downloads.push(result),
+                    Err(_) => {
+                        tracing::error!("download file task failed, sender was dropped");
+                    }
+                }
+            }
+        })
+        .await;
+
+        for completed in &completed_downloads {
+            self.currently_downloading.remove(&completed.filename);
+        }
+
+        let mut currently_downloading = Vec::with_capacity(self.currently_downloading.len());
+
+        for (filename, context) in &self.currently_downloading {
+            let state = context.current_state.borrow();
+            currently_downloading.push(CurrentlyDowloadingFile {
+                filename: filename.clone(),
+                peers: state.current_peers.clone(),
+            });
+        }
+
+        currently_downloading
     }
 }

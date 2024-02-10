@@ -26,10 +26,28 @@ pub fn get_client_router(client: TorrentClient) -> Router {
         .route("/upload_new_client_file", post(handle_upload_file))
         .route("/healthcheck", get(handle_healthcheck))
         .route("/delete_file", post(handle_delete_file))
+        .route("/download_file", post(handle_download_file))
+        .route("/currently_downloading", get(handle_currently_downloading))
         .layer(DefaultBodyLimit::disable())
         .with_state(Arc::new(RwLock::new(client)));
 
     router
+}
+
+#[derive(Debug, Serialize)]
+pub struct CurrentlyDowloadingFile {
+    pub filename: String,
+    pub peers: Vec<String>,
+}
+
+async fn handle_currently_downloading(
+    State(client): State<ClientState>,
+) -> Result<Json<Vec<CurrentlyDowloadingFile>>, ApiError> {
+    let mut client = client.write().await;
+
+    let currently_downloading = client.get_downloading_progress().await;
+
+    Ok(currently_downloading.into())
 }
 
 async fn handle_healthcheck() -> Json<serde_json::Value> {
@@ -44,6 +62,7 @@ struct RemoteFile {
     filename: String,
     num_chunks: u64,
     chunk_size: u64,
+    file_size: u64,
     peers: Vec<String>,
 }
 
@@ -80,6 +99,7 @@ async fn handle_list_server_files(
             num_chunks: x.num_chunks,
             chunk_size: x.chunk_size,
             peers: x.peers,
+            file_size: x.file_size,
         })
         .collect_vec();
 
@@ -115,7 +135,7 @@ async fn handle_upload_file(
 }
 
 #[derive(Deserialize)]
-struct DeleteFileRequest {
+struct FilenamePostData {
     filename: String,
 }
 
@@ -124,7 +144,7 @@ struct DeleteFileRequest {
 /// so it won't advertise this client as a peer for this file anymore.
 async fn handle_delete_file(
     State(client): State<ClientState>,
-    Json(request): Json<DeleteFileRequest>,
+    Json(request): Json<FilenamePostData>,
 ) -> Result<(), ApiError> {
     tracing::info!("Handling delete file request");
     client
@@ -133,6 +153,34 @@ async fn handle_delete_file(
         .delete_file(&request.filename)
         .await
         .context("failed to delete file")?;
+
+    Ok(())
+}
+
+#[derive(Deserialize)]
+struct DownloadFileRequest {
+    filename: String,
+    chunk_size: u64,
+    num_chunks: u64,
+    file_size: u64,
+}
+
+async fn handle_download_file(
+    State(client): State<ClientState>,
+    Json(request): Json<DownloadFileRequest>,
+) -> Result<(), ApiError> {
+    tracing::info!("Handling download file request");
+    client
+        .write()
+        .await
+        .download_file(
+            &request.filename,
+            request.chunk_size,
+            request.num_chunks,
+            request.file_size,
+        )
+        .await
+        .context("failed to download file")?;
 
     Ok(())
 }

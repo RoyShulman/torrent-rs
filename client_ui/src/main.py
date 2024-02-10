@@ -63,11 +63,15 @@ def show_server_files():
         return
 
     
-    files_df = pd.DataFrame(files, columns=["filename", "num_chunks", "chunk_size", "peers"])
+    files_df = pd.DataFrame(files, columns=["filename", "num_chunks", "chunk_size", "peers", "file_size"])
+    if files_df.empty:
+        st.info("No files available on the server")
+        return
     files_df["formatted_chunk_size"] = files_df["chunk_size"].apply(lambda x: decimal(int(x)))
-    files_df.drop(columns="chunk_size", inplace=True)
+    files_df["formatted_file_size"] = files_df["file_size"].apply(lambda x: decimal(int(x)))
+    files_df["select_to_download"] = False
     
-    st.dataframe(files_df, column_config={
+    selected_df = st.data_editor(files_df, column_config={
         "filename": "Filename",
         "num_chunks": st.column_config.NumberColumn(
             "Number of Chunks",
@@ -75,8 +79,24 @@ def show_server_files():
             help="The number of chunks the file is split into",
         ),
         "formatted_chunk_size": "Chunk size",
+        "formatted_file_size": "File size",
         "peers": "Peers",
+        "select_to_download": "Select to download",
+        "chunk_size": None,
+        "file_size": None
     }, use_container_width=True)
+
+    selected_df = selected_df[selected_df["select_to_download"] == True]
+    if selected_df.empty:
+        return
+    st.info(f"Downloading {selected_df.shape[0]} files from the server :hourglass_flowing_sand:")
+    for _, row in selected_df.iterrows():
+        try:
+            send_post_request("download_file", {"filename": row["filename"], "num_chunks": row["num_chunks"],
+                                                "chunk_size": row["chunk_size"], "file_size": row["file_size"]})
+        except ApiRequestFailedException as e:
+            show_api_request_fail(e)
+            return
 
 def get_chunk_percentage(row):
     num_available_chunks =  (row['num_chunks'] - len(row['missing_chunks']) * 1.)/row['num_chunks']
@@ -88,13 +108,21 @@ def show_local_files():
     """
     st.subheader("Local files available on the client 📁")
     try:
-        files = send_get_request("list_local_files")
+        completed = send_get_request("list_local_files")
+        currently_downloading = send_get_request("currently_downloading")
     except ApiRequestFailedException as e:
         show_api_request_fail(e)
         return
-    files_df = pd.DataFrame(files, columns=["filename", "num_chunks", "missing_chunks", "chunk_size", "chunk_states_directory"])
+    files_df = pd.DataFrame(completed, columns=["filename", "num_chunks", "missing_chunks", "chunk_size", "chunk_states_directory", "file_size"])
+    downloading_df = pd.DataFrame(currently_downloading, columns=["filename", "peers"])
+    files_df = files_df.merge(downloading_df, on="filename", how="left")
+    if files_df.empty:
+        st.info("No local files available on the client")
+        return
+
     files_df["formatted_chunk_size"] = files_df["chunk_size"].apply(lambda x: decimal(int(x)))
-    files_df = files_df.drop(columns="chunk_size").drop(columns="chunk_states_directory")
+    files_df["formatted_file_size"] = files_df["file_size"].apply(lambda x: decimal(int(x)))
+    files_df = files_df.drop(columns="chunk_size").drop(columns="chunk_states_directory").drop(columns="file_size")
     files_df["num_chunks"] = files_df["num_chunks"].astype(int)
     # Calculate the progress of the chunks as percentage
     files_df["chunks_progress"] = files_df.apply(lambda row: get_chunk_percentage(row), axis=1)
@@ -109,6 +137,7 @@ def show_local_files():
             help="The number of chunks the file is split into",
         ),
         "formatted_chunk_size": "Chunk size",
+        "formatted_file_size": "File size",
         "chunks_progress": st.column_config.ProgressColumn(
             "Chunks Progress",
             help="The number of chunks that have been downloaded",

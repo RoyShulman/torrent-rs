@@ -12,8 +12,11 @@ use tracing::instrument;
 /// Trait for a session with a torrent server.
 ///
 /// Used to abstract the internal sending and receiving of buffers.
-pub trait SocketWrapper {
-    async fn connect<A: ToSocketAddrs>(addr: A) -> anyhow::Result<Self>
+/// See https://blog.rust-lang.org/2023/12/21/async-fn-rpit-in-traits.html
+/// for why we need `trait_variant::make`
+#[trait_variant::make(SocketWrapper: Send)]
+pub trait LocalSocketWrapper: Send {
+    async fn connect<A: ToSocketAddrs + Send>(addr: A) -> anyhow::Result<Self>
     where
         Self: Sized;
     async fn send(&mut self, buffer: &[u8]) -> anyhow::Result<()>;
@@ -53,7 +56,7 @@ impl SocketWrapper for TokioSocketWrapper {
         Ok(Some(result))
     }
 
-    async fn connect<A: ToSocketAddrs>(addr: A) -> anyhow::Result<Self> {
+    async fn connect<A: ToSocketAddrs + Send>(addr: A) -> anyhow::Result<Self> {
         let session = TcpStream::connect(addr)
             .await
             .context("failed to connect to ")?;
@@ -159,7 +162,7 @@ mod tests {
             Ok(Some(bytes_to_read))
         }
 
-        async fn connect<A: ToSocketAddrs>(_addr: A) -> anyhow::Result<Self> {
+        async fn connect<A: ToSocketAddrs + Send>(_addr: A) -> anyhow::Result<Self> {
             Ok(Self { buffer: Vec::new() })
         }
     }
@@ -198,7 +201,9 @@ mod tests {
         session.send_msg(&msg).await.unwrap();
 
         let mut buffer = vec![0u8; expected_len + 4];
-        session.socket_wrapper.recv(&mut buffer).await.unwrap();
+        SocketWrapper::recv(&mut session.socket_wrapper, &mut buffer)
+            .await
+            .unwrap();
 
         let received_size =
             u32::from_le_bytes([buffer[0], buffer[1], buffer[2], buffer[3]]) as usize;

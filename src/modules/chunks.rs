@@ -8,6 +8,7 @@
 //! The module keeps track of the state of each file in a directory, so only upon initialization it reads the chunk states from disk.
 //! It does however write the chunk states to disk every time a new chunk is downloaded.
 //!
+//!
 //! Each entry is a JSON file with the following structure:
 //! ```json
 //! {
@@ -18,6 +19,8 @@
 //!    "chunk_states_directory": "/tmp/chunk_states"
 //! }
 //! ```
+//! New files are created with the filename, and replacing the extension to be json.
+//!
 //!
 //! This isn't very efficent, but it's simple and works for now.
 
@@ -28,7 +31,10 @@ use std::{
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
-use tokio::fs::read_to_string;
+use tokio::{
+    fs::{read_to_string, OpenOptions},
+    io::AsyncReadExt,
+};
 
 ///
 /// For every downloading or seeding file, we keep track of the chunks that have been downloaded, as well as some metadata.
@@ -46,6 +52,10 @@ pub struct SingleFileChunksState {
     ///
     /// The size of each chunk. Note the last chunk might be smaller than this size.
     pub chunk_size: u64,
+
+    ///
+    /// The total size of the file. Important because the last chunk might be smaller than the rest.
+    pub file_size: u64,
     ///
     /// The directory where this file is stored.
     chunk_states_directory: PathBuf,
@@ -54,7 +64,7 @@ pub struct SingleFileChunksState {
 impl SingleFileChunksState {
     #[tracing::instrument(err(Debug))]
     pub async fn from_filename(directory: &Path, filename: &str) -> anyhow::Result<Self> {
-        let state_file = directory.join(format!("{filename}.json"));
+        let state_file = directory.join(filename).with_extension("json");
         let content = read_to_string(&state_file)
             .await
             .context("failed to read state file")?;
@@ -70,6 +80,7 @@ impl SingleFileChunksState {
         chunk_states_directory: P,
         num_chunks: u64,
         chunk_size: u64,
+        file_size: u64,
     ) -> Self {
         Self {
             filename: filename.to_string(),
@@ -77,6 +88,7 @@ impl SingleFileChunksState {
             missing_chunks: HashSet::from_iter(0..num_chunks),
             chunk_size,
             chunk_states_directory: chunk_states_directory.into(),
+            file_size,
         }
     }
 
@@ -88,6 +100,7 @@ impl SingleFileChunksState {
         chunk_states_directory: P,
         num_chunks: u64,
         chunk_size: u64,
+        file_size: u64,
     ) -> Self {
         Self {
             filename: filename.to_string(),
@@ -95,6 +108,7 @@ impl SingleFileChunksState {
             missing_chunks: HashSet::new(),
             chunk_size,
             chunk_states_directory: chunk_states_directory.into(),
+            file_size,
         }
     }
 
@@ -155,6 +169,44 @@ impl SingleFileChunksState {
         )
         .await
         .context("failed to delete file")
+    }
+}
+
+///
+/// Searches for a chunk state file in the given directory. If it exists, returns the content,
+/// otherwise creates a new state file and returns it.
+#[tracing::instrument(err(Debug))]
+pub async fn find_or_create_chunk_state(
+    directory: &Path,
+    filename: &str,
+    num_chunks: u64,
+    chunk_size: u64,
+    file_size: u64,
+) -> anyhow::Result<SingleFileChunksState> {
+    let path = directory.join(filename).with_extension("json");
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .read(true)
+        .open(&path)
+        .await
+        .context("failed to create or open file")?;
+
+    let mut content = String::new();
+    file.read_to_string(&mut content)
+        .await
+        .context("failed to read file")?;
+    if content.is_empty() {
+        let state = SingleFileChunksState::new_file_to_download(
+            filename, directory, num_chunks, chunk_size, file_size,
+        );
+        state
+            .serialize_to_file()
+            .await
+            .context("failed to serialized new state file")?;
+        Ok(state)
+    } else {
+        serde_json::from_str(&content).context("failed to deserialize state")
     }
 }
 
@@ -249,6 +301,7 @@ mod tests {
             missing_chunks: HashSet::from_iter([1, 2, 3]),
             chunk_size: 1024,
             chunk_states_directory: directory.path().to_path_buf(),
+            file_size: 1024 * 5,
         };
 
         let missing_chunks = state.missing_chunks.into_iter().sorted().collect_vec();
@@ -258,7 +311,13 @@ mod tests {
     #[test]
     fn test_create_new_file_to_download() {
         let directory = tempdir().unwrap();
-        let state = SingleFileChunksState::new_file_to_download("file1", directory.path(), 5, 1024);
+        let state = SingleFileChunksState::new_file_to_download(
+            "file1",
+            directory.path(),
+            5,
+            1024,
+            1024 * 5,
+        );
         let missing_chunks = state.missing_chunks.into_iter().sorted().collect_vec();
         assert_eq!(missing_chunks, vec![0, 1, 2, 3, 4]);
     }
@@ -266,7 +325,13 @@ mod tests {
     #[test]
     fn test_create_new_existing_file() {
         let directory = tempdir().unwrap();
-        let state = SingleFileChunksState::new_existing_file("file1", directory.path(), 5, 1024);
+        let state = SingleFileChunksState::new_existing_file(
+            "file1",
+            directory.path(),
+            5,
+            1024,
+            1024 * 5 - 20,
+        );
         let missing_chunks = state.missing_chunks.into_iter();
         assert_eq!(missing_chunks.count(), 0);
     }
@@ -274,13 +339,18 @@ mod tests {
     #[tokio::test]
     async fn test_update_new_downloaded_chunk() {
         let directory = tempdir().unwrap();
-        let mut state =
-            SingleFileChunksState::new_file_to_download("file1", directory.path(), 5, 1024);
+        let mut state = SingleFileChunksState::new_file_to_download(
+            "file1",
+            directory.path(),
+            5,
+            1024,
+            1024 * 5,
+        );
         state.serialize_to_file().await.unwrap();
         state.update_new_chunk(1).await.unwrap();
         state.update_new_chunk(3).await.unwrap();
 
-        let content = tokio::fs::read_to_string(directory.path().join("file1"))
+        let content = tokio::fs::read_to_string(directory.path().join("file1.json"))
             .await
             .unwrap();
 
@@ -293,6 +363,7 @@ mod tests {
                 missing_chunks: HashSet::from_iter([0, 2, 4]),
                 chunk_size: 1024,
                 chunk_states_directory: directory.into_path(),
+                file_size: 1024 * 5,
             }
         );
     }
@@ -301,14 +372,15 @@ mod tests {
     async fn test_load_from_directory() {
         let directory = tempdir().unwrap();
         tokio::fs::write(
-            directory.path().join("file1"),
+            directory.path().join("file1.json"),
             format!(
                 r#"{{
                 "filename": "file1",
                 "num_chunks": 5,
                 "chunk_size": 1024,
                 "missing_chunks": [1, 3],
-                "chunk_states_directory": "{}"
+                "chunk_states_directory": "{}",
+                "file_size": 5120
             }}"#,
                 directory.path().display(),
             ),
@@ -316,14 +388,15 @@ mod tests {
         .await
         .unwrap();
         tokio::fs::write(
-            directory.path().join("file2"),
+            directory.path().join("file2.json"),
             format!(
                 r#"{{
                 "filename": "file2",
                 "num_chunks": 5,
                 "chunk_size": 2048,
                 "missing_chunks": [0],
-                "chunk_states_directory": "{}"
+                "chunk_states_directory": "{}",
+                "file_size": 10240
             }}"#,
                 directory.path().display(),
             ),
@@ -347,6 +420,7 @@ mod tests {
                     missing_chunks: HashSet::from_iter([1, 3]),
                     chunk_size: 1024,
                     chunk_states_directory: directory.path().to_path_buf(),
+                    file_size: 5120,
                 },
                 SingleFileChunksState {
                     filename: "file2".to_string(),
@@ -354,6 +428,7 @@ mod tests {
                     missing_chunks: HashSet::from_iter([0]),
                     chunk_size: 2048,
                     chunk_states_directory: directory.path().to_path_buf(),
+                    file_size: 10240,
                 }
             ]
         );
