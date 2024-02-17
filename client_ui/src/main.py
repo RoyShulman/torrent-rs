@@ -209,8 +209,8 @@ def run_health_check(endpoint):
         return False
 
 
-st.set_page_config(page_title="Download File Client", layout="wide")
-st.title("Download File Client")
+st.set_page_config(page_title="P2P File Sharing Client", layout="wide")
+st.title("P2P File Sharing Client")
 
 with st.sidebar:
     st.subheader("Client API")

@@ -96,7 +96,7 @@ impl<T> DownloadFileContextBuilder<T> {
 
         let data_file = SingleChunkedFile::new(self.data_files_directory.join(&self.filename));
         if chunks_state.get_available_chunks().is_empty() {
-            // The file is just starting to download, we need to create the file
+            // There was no previous attempt to download this file, we need to create the file
             data_file
                 .create(self.file_size)
                 .await

@@ -6,8 +6,6 @@ use tokio::{
 };
 use tracing::instrument;
 
-#[allow(async_fn_in_trait)]
-
 ///
 /// Trait for a session with a torrent server.
 ///
@@ -139,6 +137,8 @@ mod tests {
         include!(concat!(env!("OUT_DIR"), "/torrent.client.rs"));
     }
 
+    ///
+    /// Mock implementation of `SocketWrapper` for testing. Includes a buffer to simulate sending and receiving data
     struct MockSocketWrapper {
         buffer: Vec<u8>,
     }

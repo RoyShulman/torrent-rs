@@ -311,6 +311,7 @@ mod tests {
             num_chunks: 5,
             chunk_size: 10,
             file_size: 50,
+            peer_port: 1,
         };
 
         let peer_addr = "127.0.0.1:1".parse().unwrap();
@@ -325,7 +326,7 @@ mod tests {
         assert_eq!(file.filename, "file1");
         assert_eq!(file.num_chunks, 5);
         assert_eq!(file.chunk_size, 10);
-        assert_eq!(file.peers, HashSet::from_iter(["127.0.0.1".to_string()]));
+        assert_eq!(file.peers, HashSet::from_iter(["127.0.0.1:1".to_string()]));
     }
 
     #[tokio::test]
@@ -336,7 +337,7 @@ mod tests {
             num_chunks: 5,
             chunk_size: 10,
             file_size: 45,
-            peers: HashSet::from_iter(["1.2.3.4".to_string()]),
+            peers: HashSet::from_iter(["1.2.3.4:1".to_string()]),
         };
 
         serde_json::to_writer(
@@ -350,6 +351,7 @@ mod tests {
             num_chunks: 5,
             chunk_size: 10,
             file_size: 47,
+            peer_port: 1,
         };
         let peer_addr = "127.0.0.1:1".parse().unwrap();
         handle_new_file_on_client(request, directory.path(), &peer_addr)
@@ -366,7 +368,7 @@ mod tests {
         assert_eq!(file.chunk_size, 10);
         assert_eq!(
             file.peers,
-            HashSet::from_iter(["1.2.3.4".to_string(), "127.0.0.1".to_string()])
+            HashSet::from_iter(["1.2.3.4:1".to_string(), "127.0.0.1:1".to_string()])
         );
     }
 }
