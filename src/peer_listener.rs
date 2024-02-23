@@ -30,8 +30,6 @@ mod peer_proto {
 ///
 /// This will handle all the requests from the peer and send responses back.
 /// Mostly used to send chunk responses about a single file.
-/// TODO: This can probably be optimized since a session is about a single file, so
-/// maybe we can read the state once into memory?
 impl ConnectedPeer {
     #[instrument(err(Debug))]
     pub async fn serve_forever(mut self) -> anyhow::Result<()> {

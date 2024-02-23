@@ -148,7 +148,6 @@ async fn handle_new_file_on_client(
     files_directory: &Path,
     peer_addr: &std::net::SocketAddr,
 ) -> anyhow::Result<()> {
-    // TODO: there is a race here, if two clients add the same file at the same time, the file will be overwritten and we will lose the peers from one of the clients
     tracing::info!("Handling new file on client request: {:?}", request);
 
     let metadata_file = files_directory.join(format!("{}.json", request.filename));
